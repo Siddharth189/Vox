@@ -19,11 +19,22 @@ arboard = "3"
 cpal = "0.15"
 tao = "0.35.3"
 tray-icon = "0.24.1"
-global-hotkey = "0.8.0"
 enigo = "0.6.1"
 axum = "0.8.9"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "net"] }
 libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The "tracing" feature isn't default-on: without it, global-hotkey's X11
+# backend thread (which does its own connection setup, XKB extension
+# negotiation, and XGrabKey calls independently of the rest of the app) logs
+# nothing on failure, and register_hotkey() can still return Ok(()) even
+# when nothing was actually registered - its internal channel-based error
+# path silently drops the failure if the worker thread has already exited.
+# Confirmed via real hardware testing on this port: silence here does not
+# mean success.
+global-hotkey = { version = "0.8.0", features = ["tracing"] }
 
 # Exact macOS stack from the Vox spec.
 [target.'cfg(target_os = "macos")'.dependencies]

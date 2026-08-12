@@ -147,18 +147,34 @@ section reflects real testing on Fedora 42 with KDE Plasma on Wayland, not assum
   up) and works well: the `small` model (487MB resident) transcribed synthesized speech
   accurately in testing. On lower-RAM machines, `./scripts/download_model.sh tiny` or `base`
   trade accuracy for a smaller footprint.
-- **LLM model size matters more than you'd expect on RAM-constrained machines.** This was the
-  single biggest issue found in testing: on an 8GB machine, the default `llama3.2:latest`
-  (3B, ~2GB) pushed the system into swap once the desktop session's own memory use was added
-  in, and a single dictation's cleanup step took 4+ minutes without completing, well past
-  Vox's 60-second request timeout. Switching to `llama3.2:1b` (1.3GB) brought that down to
-  single-digit seconds reliably. The tradeoff is real: the 1B model occasionally drops words,
-  loses the subject of a sentence, or invents small details (a hallucinated time, for
-  example) that the 3B model handled correctly in the same tests. `vox doctor` now checks
-  your total RAM against the configured model's size and warns if they're a bad match, with
-  a fix suggestion. If you have 12GB+ RAM, the default 3B model is worth keeping for the
-  better output quality; below that, start with `llama3.2:1b` and raise it only if your
-  machine keeps up.
+- **The event loop had a real bug that made everything look broken.** `tao`'s
+  `ControlFlow::WaitUntil` does not reliably re-arm on at least one real setup (KDE Plasma
+  Wayland): it fired a handful of times at startup and then silently stopped, which meant
+  the hotkey grab succeeded and events genuinely arrived in the channel, but nothing was
+  left polling for them - holding the hotkey did nothing, and the "Settings..." menu item
+  (which separately used the macOS-only `open` command with no Linux fallback) did nothing
+  either. Fixed by parking the loop fully idle (`ControlFlow::Wait`, ~0% CPU) and waking it
+  on a fixed cadence from a dedicated thread via `EventLoopProxy::send_event` - the same
+  mechanism worker threads already use to deliver pipeline results back to the UI, so it
+  doesn't depend on the platform re-arming a timer correctly. An earlier `Poll`-based
+  workaround "fixed" the symptom but cost 30-50% constant CPU, which starved the actual
+  transcription and LLM steps of CPU and made a real dictation take 113 seconds end to end.
+- **Model size matters more than you'd expect on RAM-constrained machines, for both models.**
+  This was the single biggest performance issue found in testing: on an 8GB machine, the
+  default `llama3.2:latest` (3B, ~2GB) pushed the system into swap once the desktop
+  session's own memory use was added in, and a single dictation's cleanup step took 4+
+  minutes without completing, well past Vox's 60-second request timeout. Switching to
+  `llama3.2:1b` (1.3GB) brought that down to single-digit seconds. Whisper's `small` model
+  (487MB) was the other half of the same problem - about 50 seconds to transcribe a 7-second
+  clip, competing with the LLM and the tray itself for the same limited cores; `base`
+  (141MB) cut that to a few seconds with no noticeable accuracy loss on clear speech. The
+  1B LLM tradeoff is real: it occasionally drops the subject of a sentence, invents small
+  details, or (fixed in testing) prefaces its answer with unstripped meta-commentary like
+  "I'll provide the corrected text:" that the 3B model didn't produce in the same tests.
+  `vox doctor` checks your total RAM against the configured LLM's size and warns if they're
+  a bad match. If you have 12GB+ RAM, the default 3B model plus the `small` Whisper model
+  are worth keeping for the better quality; below that, `install-linux.sh` picks the faster
+  pairing (`llama3.2:1b` + `base`) automatically.
 - **Per-app profile detection is confirmed working** via `kdotool` on KDE Plasma, X11 or
   Wayland alike - verified against real windows in testing, including correctly identifying
   a Konsole window by its `org.kde.konsole` WM_CLASS. This is notable because the naive

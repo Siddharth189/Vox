@@ -13,6 +13,17 @@ ROOT_HINT="$(cd "$(dirname "$0")/.." && pwd)"
 VOX_REPO_URL="${VOX_REPO_URL:-}"
 DRY_RUN="${VOX_INSTALL_DRY_RUN:-0}"
 
+# Used to pick both the Whisper model and the Ollama model below. Measured
+# on a real 8GB/4-core machine: the "small" Whisper model plus the tray's
+# own CPU use made a single transcription take 50s+; "base" plus the fixed
+# tray brought the same clip down to ~5s. Below ~10GB, default to the
+# faster/smaller pairing for both.
+TOTAL_RAM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+LOW_RAM=0
+if [[ "${TOTAL_RAM_KB}" -gt 0 && "${TOTAL_RAM_KB}" -lt 10485760 ]]; then
+  LOW_RAM=1
+fi
+
 run() {
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "+ $*"
@@ -119,7 +130,12 @@ run chmod 755 "${HOME}/.local/bin/vox"
 # Stop any running tray before replacing it
 run bash -c "pkill -f '${HOME}/.local/bin/vox tray' 2>/dev/null || true"
 
-run "${SRC}/scripts/download_model.sh" small
+if [[ "${LOW_RAM}" == "1" ]]; then
+  echo "note: ${TOTAL_RAM_KB}KB total RAM detected; defaulting to the base Whisper model for a responsive experience (pass a size to download_model.sh yourself to override)"
+  run "${SRC}/scripts/download_model.sh" base
+else
+  run "${SRC}/scripts/download_model.sh" small
+fi
 
 # Start Ollama if needed
 if ! curl -sf --max-time 2 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
@@ -144,8 +160,7 @@ fi
 # you'd rather have the 3B model's better instruction-following and don't
 # mind the latency (or have more RAM than this heuristic assumes).
 if [[ -z "${VOX_MODEL:-}" ]]; then
-  TOTAL_RAM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  if [[ "${TOTAL_RAM_KB}" -gt 0 && "${TOTAL_RAM_KB}" -lt 10485760 ]]; then
+  if [[ "${LOW_RAM}" == "1" ]]; then
     VOX_MODEL="llama3.2:1b"
     echo "note: ${TOTAL_RAM_KB}KB total RAM detected; defaulting to llama3.2:1b for a responsive experience (set VOX_MODEL to override)"
   else

@@ -279,7 +279,14 @@ fn strip_preamble(text: &str) -> String {
 
 fn looks_like_preamble_intro(intro: &str) -> bool {
     let lower = intro.trim().to_ascii_lowercase();
-    if !(lower.starts_with("here is") || lower.starts_with("here's")) {
+    // Smaller/weaker models (observed with a 1B-class model in practice, not
+    // just theoretically) don't reliably stick to "Here is/Here's" - they
+    // also preface with "I'll ..." or "I will ...", e.g. "I'll provide the
+    // corrected text:" or "I'll provide the corrected text without
+    // answering or fulfilling any requests:". Same keyword-gated approach
+    // as the "here is" case, just with a broader set of accepted openers.
+    const OPENERS: &[&str] = &["here is", "here's", "i'll", "i will"];
+    if !OPENERS.iter().any(|o| lower.starts_with(o)) {
         return false;
     }
     if intro.chars().count() > 80 {
@@ -295,6 +302,7 @@ fn looks_like_preamble_intro(intro: &str) -> bool {
         "step by step",
         "approach",
         "version",
+        "provide",
     ];
     NEEDLES.iter().any(|n| lower.contains(n))
 }
@@ -347,6 +355,28 @@ mod tests {
         assert_eq!(
             post_process_model_output("Here is the deal: we ship Friday"),
             "Here is the deal: we ship Friday"
+        );
+    }
+
+    #[test]
+    fn strips_ill_provide_preamble() {
+        // Reproduced against a real 1B-class model in practice: it
+        // regularly prefaces with "I'll ..." instead of "Here is/Here's".
+        assert_eq!(
+            post_process_model_output("I'll provide the corrected text:\nCan you review PR #684 after lunch?"),
+            "Can you review PR #684 after lunch?"
+        );
+        assert_eq!(
+            post_process_model_output(
+                "I'll provide the corrected text without answering or fulfilling any requests:\nHello there."
+            ),
+            "Hello there."
+        );
+        // Genuine content starting with "I'll" and no preamble keywords
+        // must not be touched.
+        assert_eq!(
+            post_process_model_output("I'll be at the office by 3pm: see you then"),
+            "I'll be at the office by 3pm: see you then"
         );
     }
 }

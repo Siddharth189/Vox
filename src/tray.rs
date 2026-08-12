@@ -39,6 +39,7 @@ enum UserEvent {
         injection: InjectionResult,
         inject_ms: u64,
     },
+    Heartbeat,
 }
 
 struct Runtime {
@@ -154,6 +155,17 @@ impl InstanceLock {
 }
 
 pub fn run(model_override: Option<PathBuf>) -> Result<()> {
+    // Without this, failures inside global-hotkey's own worker thread (X11
+    // connection, XKB extension setup, XGrabKey) are completely silent -
+    // its "tracing" feature is opt-in, and register_hotkey() can still
+    // return Ok(()) even when nothing was actually registered.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
+
     let _lock = InstanceLock::acquire()?;
     crate::settings_web::start_background();
 
@@ -164,6 +176,29 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     #[cfg(target_os = "macos")]
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let proxy = event_loop.create_proxy();
+
+    // Linux only: ControlFlow::WaitUntil does not reliably re-arm on at
+    // least one real desktop (KDE Plasma Wayland, tao 0.35.3) - confirmed by
+    // an unconditional per-tick log that fired 3 times at startup and then
+    // never again, even though the process stayed alive (a second thread's
+    // settings server kept answering). A blocking Poll+sleep loop "fixed"
+    // that but burned 30-50% CPU constantly, which starved the actual
+    // dictation pipeline of CPU and turned a ~10s transcription into 50s+.
+    // EventLoopProxy::send_event is the same mechanism worker threads
+    // already use to deliver UserEvent::Done/Injected, and reliably wakes
+    // the loop regardless of the WaitUntil bug, so a dedicated thread using
+    // only that plus a real sleep (zero CPU while parked) replaces the
+    // timer-based rearming without depending on it.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let heartbeat_proxy = proxy.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(300));
+            if heartbeat_proxy.send_event(UserEvent::Heartbeat).is_err() {
+                break;
+            }
+        });
+    }
 
     let hotkey_manager = GlobalHotKeyManager::new()
         .map_err(|e| VoxError::Other(format!("hotkey manager: {e}")))?;
@@ -220,8 +255,26 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     // Separate from pipeline_mtime so hotkey-only polls don't swallow rebuilds.
     let mut last_polled_mtime = runtime.pipeline_mtime;
 
+    tracing::warn!(
+        "entering event loop; current_hotkey registered = {}",
+        current_hotkey.is_some()
+    );
+
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100));
+        // On macOS WaitUntil re-arms correctly and costs nothing while idle.
+        // On Linux it doesn't reliably re-arm (see the heartbeat-thread
+        // comment above), so stay fully parked (Wait, ~0% CPU) and rely on
+        // the dedicated heartbeat thread's send_event to wake this closure
+        // on the same cadence instead.
+        #[cfg(target_os = "macos")]
+        {
+            *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            *control_flow = ControlFlow::Wait;
+        }
+        let _ = &event;
 
         // Poll settings mtime for hotkey-only changes (do not advance pipeline_mtime).
         let path = config::settings_path();
@@ -260,9 +313,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
 
         while let Ok(MenuEvent { id }) = menu_channel.try_recv() {
             if id == settings_id {
-                let _ = std::process::Command::new("open")
-                    .arg("http://127.0.0.1:8722")
-                    .status();
+                open_settings_ui();
             } else if id == accessibility_id {
                 permissions::request_accessibility_trust();
                 permissions::open_accessibility_settings();
@@ -272,10 +323,13 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
         }
 
         while let Ok(event) = hotkey_channel.try_recv() {
+            tracing::warn!("hotkey_channel event received: id={} state={:?}", event.id, event.state);
             let Some(ref hk) = current_hotkey else {
+                tracing::warn!("no current_hotkey registered, ignoring event");
                 continue;
             };
             if event.id != hk.id() {
+                tracing::warn!("event id {} != registered hotkey id {}, ignoring", event.id, hk.id());
                 continue;
             }
             match event.state {
@@ -343,6 +397,10 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
             match user {
                 UserEvent::Done(Ok(report)) => {
                     if report.processed_text.is_empty() {
+                        tracing::warn!(
+                            "empty processed_text (raw={:?}); non-speech or silent audio, skipping injection",
+                            report.raw_text
+                        );
                         status_item.set_text("Vox: idle");
                     } else {
                         let pipeline = Arc::clone(&runtime.pipeline);
@@ -413,6 +471,9 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                         let _ = t.set_tooltip(Some(msg));
                     }
                 }
+                // No-op: exists purely to wake this closure on Linux, where
+                // ControlFlow::WaitUntil doesn't reliably re-arm itself.
+                UserEvent::Heartbeat => {}
             }
         }
 
@@ -426,6 +487,23 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
 const PASTE_HINT: &str = "Vox: on clipboard (Cmd+V)";
 #[cfg(not(target_os = "macos"))]
 const PASTE_HINT: &str = "Vox: on clipboard (Ctrl+V)";
+
+fn open_settings_ui() {
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(target_os = "macos"))]
+    let opener = "xdg-open";
+
+    let status = std::process::Command::new(opener)
+        .arg("http://127.0.0.1:8722")
+        .status();
+    if !matches!(status, Ok(s) if s.success()) {
+        eprintln!(
+            "warning: failed to open settings UI via `{opener}`: {status:?} \
+             (browse to http://127.0.0.1:8722 manually)"
+        );
+    }
+}
 
 fn status_for_strategy(strategy: &str) -> &'static str {
     if strategy.contains("clipboard kept") {
