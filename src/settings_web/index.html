@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vox Settings</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --text: #1a1d23;
+      --muted: #5c6570;
+      --accent: #0b6e4f;
+      --border: #dde1e6;
+      --danger: #b42318;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #12151a;
+        --card: #1b1f27;
+        --text: #e8eaed;
+        --muted: #9aa3ad;
+        --accent: #3dba8c;
+        --border: #2c333d;
+        --danger: #f97066;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 1.25rem 1.5rem 0.5rem;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.95rem; }
+    nav.tabs {
+      display: flex;
+      gap: 0.5rem;
+      max-width: 860px;
+      margin: 1rem auto 0;
+      padding: 0 1.5rem;
+      flex-wrap: wrap;
+    }
+    nav.tabs button {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      padding: 0.4rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    nav.tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 1rem 1.5rem 3rem;
+    }
+    .page { display: none; }
+    .page.active { display: block; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.15rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+    input[type=text], input[type=number], select, textarea {
+      width: 100%;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .row > * { flex: 1; min-width: 180px; }
+    .actions { display: flex; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.55rem 1rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.55rem 1rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.danger { color: var(--danger); border-color: var(--danger); }
+    .status { color: var(--muted); font-size: 0.9rem; }
+    .check { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.45rem 0.35rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Vox</h1>
+    <p>Local voice dictation settings — nothing leaves this machine.</p>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button data-page="general" class="active">General</button>
+    <button data-page="dictionary">Dictionary</button>
+    <button data-page="profiles">Profiles</button>
+    <button data-page="history">History</button>
+  </nav>
+  <main>
+    <section class="page active" id="page-general">
+      <div class="card">
+        <h2>Language</h2>
+        <div class="row">
+          <div>
+            <label for="input_language">Input language</label>
+            <input id="input_language" type="text" placeholder="auto" />
+          </div>
+          <div>
+            <label for="output_language">Output language</label>
+            <input id="output_language" type="text" placeholder="auto" />
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Models</h2>
+        <label for="whisper_model">Whisper model</label>
+        <select id="whisper_model"></select>
+        <label for="llm_model">Ollama LLM</label>
+        <select id="llm_model"></select>
+      </div>
+      <div class="card">
+        <h2>Behavior</h2>
+        <div class="check">
+          <input id="auto_paste" type="checkbox" />
+          <label for="auto_paste" style="margin:0">Auto-paste at cursor (Cmd+V)</label>
+        </div>
+        <label for="system_override">System message override (optional — replaces generated prompt)</label>
+        <textarea id="system_override" placeholder="Leave blank to use the generated prompt"></textarea>
+        <label>Live system prompt preview</label>
+        <textarea id="system_preview" readonly></textarea>
+      </div>
+      <div class="card">
+        <h2>Hotkey</h2>
+        <div class="check">
+          <input id="hotkey_enabled" type="checkbox" />
+          <label for="hotkey_enabled" style="margin:0">Enabled</label>
+        </div>
+        <div class="row">
+          <div>
+            <label for="hotkey_modifiers">Modifiers (comma-separated)</label>
+            <input id="hotkey_modifiers" type="text" placeholder="control,alt" />
+          </div>
+          <div>
+            <label for="hotkey_key">Key</label>
+            <input id="hotkey_key" type="text" placeholder="Space" />
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="save_general">Save</button>
+        <span class="status" id="general_status"></span>
+      </div>
+    </section>
+
+    <section class="page" id="page-dictionary"></section>
+    <section class="page" id="page-profiles"></section>
+    <section class="page" id="page-history"></section>
+  </main>
+  <script src="/app.js"></script>
+  <script src="/dictionary.js"></script>
+  <script src="/profiles.js"></script>
+  <script src="/history.js"></script>
+</body>
+</html>

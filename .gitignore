@@ -1,0 +1,8 @@
+/target/
+/dist/
+**/*.rs.bk
+.DS_Store
+*.swp
+models/ggml-*.bin
+.env
+.claude/
