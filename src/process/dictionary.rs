@@ -26,7 +26,12 @@ pub fn normalize_sentence_spacing(text: &str) -> String {
         out.push(chars[i]);
         if matches!(chars[i], '.' | '!' | '?' | ':' | ';') {
             if let Some(next) = chars.get(i + 1) {
-                if next.is_alphanumeric() {
+                // Skip numeric literals like "3:00", "12.5", "1:1" - a digit
+                // on both sides means this punctuation isn't a sentence
+                // boundary at all, so inserting a space would corrupt it.
+                let prev_digit = i > 0 && chars[i - 1].is_ascii_digit();
+                let next_digit = next.is_ascii_digit();
+                if next.is_alphanumeric() && !(prev_digit && next_digit) {
                     out.push(' ');
                 }
             }
@@ -151,6 +156,22 @@ mod tests {
             normalize_sentence_spacing("It is running.We will ship."),
             "It is running. We will ship."
         );
+    }
+
+    #[test]
+    fn sentence_spacing_preserves_numeric_literals() {
+        // Found via live testing: a naive "space after punctuation" rule
+        // mangles times, decimals, and ratios that happen to use the same
+        // punctuation characters as sentence boundaries.
+        assert_eq!(
+            normalize_sentence_spacing("The meeting is at 3:00 PM tomorrow."),
+            "The meeting is at 3:00 PM tomorrow."
+        );
+        assert_eq!(
+            normalize_sentence_spacing("Ship version 2.5 today.Then 2.6 next week."),
+            "Ship version 2.5 today. Then 2.6 next week."
+        );
+        assert_eq!(normalize_sentence_spacing("Mix it 1:1 with water."), "Mix it 1:1 with water.");
     }
 
     #[test]

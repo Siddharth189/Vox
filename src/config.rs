@@ -8,12 +8,27 @@ use crate::error::{Result, VoxError};
 use crate::model::{AppProfile, Format, Privacy};
 use crate::secure_fs;
 
+#[cfg(target_os = "macos")]
 pub fn data_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home)
             .join("Library")
             .join("Application Support")
             .join("vox"),
+        None => PathBuf::from("."),
+    }
+}
+
+/// XDG Base Directory Specification: $XDG_DATA_HOME, falling back to ~/.local/share.
+#[cfg(not(target_os = "macos"))]
+pub fn data_dir() -> PathBuf {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("vox");
+        }
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".local").join("share").join("vox"),
         None => PathBuf::from("."),
     }
 }
@@ -147,6 +162,45 @@ impl Settings {
         );
         profiles.insert(
             "com.1password.1password".into(),
+            ProfileConfig {
+                format: Format::CleanProse,
+                privacy: Privacy::Disabled,
+            },
+        );
+
+        // Linux has no bundle IDs; the app-detector keys profiles by WM_CLASS
+        // instead, so these are additive, not a replacement for the macOS
+        // entries above (harmless there too - the strings just never match).
+        profiles.insert(
+            "Slack".into(),
+            ProfileConfig {
+                format: Format::Casual,
+                privacy: Privacy::LocalOnly,
+            },
+        );
+        profiles.insert(
+            "Code".into(),
+            ProfileConfig {
+                format: Format::CodeContext,
+                privacy: Privacy::LocalOnly,
+            },
+        );
+        profiles.insert(
+            "Alacritty".into(),
+            ProfileConfig {
+                format: Format::Shell,
+                privacy: Privacy::LocalOnly,
+            },
+        );
+        profiles.insert(
+            "org.kde.konsole".into(),
+            ProfileConfig {
+                format: Format::Shell,
+                privacy: Privacy::LocalOnly,
+            },
+        );
+        profiles.insert(
+            "1Password".into(),
             ProfileConfig {
                 format: Format::CleanProse,
                 privacy: Privacy::Disabled,

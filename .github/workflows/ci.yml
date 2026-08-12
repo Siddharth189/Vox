@@ -40,38 +40,44 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
-  # Best-effort only: Vox is a macOS product (see the macos-14 job above for the
-  # real correctness gate). This job exists so contributors without a Mac get
-  # fast feedback on the platform-independent logic (config, prompt/dictionary
-  # rules, pipeline). It's allowed to fail - tray-icon/tao/global-hotkey/enigo
-  # all need Linux-specific native GUI libs (GTK, libxdo, appindicator) whose
-  # exact package set isn't verified here.
-  linux-logic-check:
-    name: cargo check (Linux, best-effort)
+  linux:
+    name: build, test (ubuntu-latest)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # cmake/gcc for whisper-rs, alsa for cpal, libxdo for enigo,
+      # gtk3/appindicator for tray-icon. kdotool/xdotool are runtime-only
+      # (shelled out to for active-window detection), not build deps.
       - name: Install native dev headers
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            cmake build-essential pkg-config \
             libasound2-dev \
-            libgtk-3-dev \
             libxdo-dev \
-            libayatana-appindicator3-dev \
-            libssl-dev \
-            pkg-config
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
 
-      - name: cargo check
-        run: cargo check --all-targets
+      # Same informational-for-now stance as the macOS job.
+      - name: cargo fmt --check
+        continue-on-error: true
+        run: cargo fmt --all -- --check
 
-      - name: cargo test (non-macOS stubs + pure logic)
-        run: cargo test
+      - name: cargo clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: cargo test
+        run: cargo test --all-features

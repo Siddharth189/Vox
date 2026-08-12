@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::config::{self, Settings};
+#[cfg(target_os = "macos")]
 use crate::permissions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,35 +81,53 @@ impl DoctorReport {
 pub fn run(settings: &Settings) -> DoctorReport {
     let mut checks = Vec::new();
 
-    // 1. macOS
+    // 1. Supported OS
     #[cfg(target_os = "macos")]
     checks.push(Check {
-        name: "macos".into(),
+        name: "os".into(),
         status: CheckStatus::Pass,
         message: "running on macOS".into(),
         fix: None,
     });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     checks.push(Check {
-        name: "macos".into(),
-        status: CheckStatus::Fail,
-        message: "Vox tray/hotkey/paste are macOS-only".into(),
-        fix: Some("Build and run on macOS".into()),
-    });
-
-    // 2. Apple Silicon
-    #[cfg(target_arch = "aarch64")]
-    checks.push(Check {
-        name: "arch".into(),
+        name: "os".into(),
         status: CheckStatus::Pass,
-        message: "Apple Silicon (aarch64)".into(),
+        message: "running on Linux".into(),
         fix: None,
     });
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    checks.push(Check {
+        name: "os".into(),
+        status: CheckStatus::Fail,
+        message: "Vox supports macOS and Linux only".into(),
+        fix: Some("Build and run on macOS or Linux".into()),
+    });
+
+    // 2. Architecture (informational everywhere except macOS, where Apple
+    // Silicon is what's actually tested)
+    #[cfg(target_os = "macos")]
+    {
+        #[cfg(target_arch = "aarch64")]
+        checks.push(Check {
+            name: "arch".into(),
+            status: CheckStatus::Pass,
+            message: "Apple Silicon (aarch64)".into(),
+            fix: None,
+        });
+        #[cfg(not(target_arch = "aarch64"))]
+        checks.push(Check {
+            name: "arch".into(),
+            status: CheckStatus::Warn,
+            message: format!("architecture {} (Apple Silicon recommended)", std::env::consts::ARCH),
+            fix: None,
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
     checks.push(Check {
         name: "arch".into(),
-        status: CheckStatus::Warn,
-        message: format!("architecture {} (Apple Silicon recommended)", std::env::consts::ARCH),
+        status: CheckStatus::Info,
+        message: format!("architecture {}", std::env::consts::ARCH),
         fix: None,
     });
 
@@ -125,7 +144,7 @@ pub fn run(settings: &Settings) -> DoctorReport {
             name: "ollama_cli".into(),
             status: CheckStatus::Warn,
             message: "ollama not found on PATH".into(),
-            fix: Some("brew install ollama".into()),
+            fix: Some(install_hint("ollama")),
         });
     }
 
@@ -142,25 +161,46 @@ pub fn run(settings: &Settings) -> DoctorReport {
             name: "cmake".into(),
             status: CheckStatus::Warn,
             message: "cmake not found (needed to build whisper-rs)".into(),
-            fix: Some("brew install cmake".into()),
+            fix: Some(install_hint("cmake")),
         });
     }
 
-    // 5. Xcode CLT
-    let xcode = Command::new("xcode-select").arg("-p").output();
-    match xcode {
-        Ok(out) if out.status.success() => checks.push(Check {
-            name: "xcode_clt".into(),
-            status: CheckStatus::Pass,
-            message: "Xcode Command Line Tools present".into(),
-            fix: None,
-        }),
-        _ => checks.push(Check {
-            name: "xcode_clt".into(),
-            status: CheckStatus::Warn,
-            message: "Xcode Command Line Tools not found".into(),
-            fix: Some("xcode-select --install".into()),
-        }),
+    // 5. Native build toolchain: Xcode CLT on macOS, a C compiler on Linux
+    #[cfg(target_os = "macos")]
+    {
+        let xcode = Command::new("xcode-select").arg("-p").output();
+        match xcode {
+            Ok(out) if out.status.success() => checks.push(Check {
+                name: "toolchain".into(),
+                status: CheckStatus::Pass,
+                message: "Xcode Command Line Tools present".into(),
+                fix: None,
+            }),
+            _ => checks.push(Check {
+                name: "toolchain".into(),
+                status: CheckStatus::Warn,
+                message: "Xcode Command Line Tools not found".into(),
+                fix: Some("xcode-select --install".into()),
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if which("cc") || which("gcc") || which("clang") {
+            checks.push(Check {
+                name: "toolchain".into(),
+                status: CheckStatus::Pass,
+                message: "C compiler present".into(),
+                fix: None,
+            });
+        } else {
+            checks.push(Check {
+                name: "toolchain".into(),
+                status: CheckStatus::Warn,
+                message: "no C compiler found (needed to build whisper-rs)".into(),
+                fix: Some(install_hint("gcc")),
+            });
+        }
     }
 
     // 6. Settings file
@@ -229,17 +269,14 @@ pub fn run(settings: &Settings) -> DoctorReport {
 
     // 8. Ollama reachability + model
     match check_ollama(&settings.llm_model) {
-        OllamaCheck::Ok => checks.push(Check {
-            name: "ollama".into(),
-            status: CheckStatus::Pass,
-            message: format!("ollama reachable; model {} present", settings.llm_model),
-            fix: None,
-        }),
+        OllamaCheck::Ok { model_size_bytes } => {
+            checks.push(ollama_model_fit_check(&settings.llm_model, model_size_bytes));
+        }
         OllamaCheck::Unreachable => checks.push(Check {
             name: "ollama".into(),
             status: CheckStatus::Fail,
             message: "ollama unreachable at http://127.0.0.1:11434".into(),
-            fix: Some("open -ga Ollama  # or: ollama serve".into()),
+            fix: Some(ollama_start_hint()),
         }),
         OllamaCheck::MissingModel => {
             let pull = settings.llm_model.trim_end_matches(":latest");
@@ -260,43 +297,125 @@ pub fn run(settings: &Settings) -> DoctorReport {
         fix: None,
     });
 
-    // 10. Accessibility
-    if !settings.auto_paste {
-        checks.push(Check {
-            name: "accessibility".into(),
-            status: CheckStatus::Info,
-            message: "auto_paste disabled; accessibility not required".into(),
-            fix: None,
-        });
-    } else if !permissions::running_from_app_bundle() {
-        checks.push(Check {
-            name: "accessibility".into(),
-            status: CheckStatus::Warn,
-            message: "not running from Vox.app; CLI doctor cannot speak for the installed app's grant"
-                .into(),
-            fix: Some("Open Accessibility Settings from the Vox tray menu".into()),
-        });
-    } else if permissions::accessibility_trusted() {
-        checks.push(Check {
-            name: "accessibility".into(),
-            status: CheckStatus::Pass,
-            message: "Accessibility trusted".into(),
-            fix: None,
-        });
-    } else {
-        checks.push(Check {
-            name: "accessibility".into(),
-            status: CheckStatus::Warn,
-            message: "Accessibility not trusted (auto-paste may fall back to clipboard)".into(),
-            fix: Some("Open Accessibility Settings from the Vox tray menu".into()),
-        });
+    // 10. Auto-paste permission: Accessibility (TCC) on macOS, no equivalent
+    // gate on Linux beyond having a graphical session for enigo/XTest to use.
+    #[cfg(target_os = "macos")]
+    {
+        if !settings.auto_paste {
+            checks.push(Check {
+                name: "accessibility".into(),
+                status: CheckStatus::Info,
+                message: "auto_paste disabled; accessibility not required".into(),
+                fix: None,
+            });
+        } else if !permissions::running_from_app_bundle() {
+            checks.push(Check {
+                name: "accessibility".into(),
+                status: CheckStatus::Warn,
+                message: "not running from Vox.app; CLI doctor cannot speak for the installed app's grant"
+                    .into(),
+                fix: Some("Open Accessibility Settings from the Vox tray menu".into()),
+            });
+        } else if permissions::accessibility_trusted() {
+            checks.push(Check {
+                name: "accessibility".into(),
+                status: CheckStatus::Pass,
+                message: "Accessibility trusted".into(),
+                fix: None,
+            });
+        } else {
+            checks.push(Check {
+                name: "accessibility".into(),
+                status: CheckStatus::Warn,
+                message: "Accessibility not trusted (auto-paste may fall back to clipboard)".into(),
+                fix: Some("Open Accessibility Settings from the Vox tray menu".into()),
+            });
+        }
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !settings.auto_paste {
+            checks.push(Check {
+                name: "input_session".into(),
+                status: CheckStatus::Info,
+                message: "auto_paste disabled; no graphical input session required".into(),
+                fix: None,
+            });
+        } else if std::env::var_os("DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        {
+            checks.push(Check {
+                name: "input_session".into(),
+                status: CheckStatus::Pass,
+                message: "graphical session detected; Linux has no Accessibility-style permission gate, auto-paste synthesizes Ctrl+V directly".into(),
+                fix: None,
+            });
+        } else {
+            checks.push(Check {
+                name: "input_session".into(),
+                status: CheckStatus::Warn,
+                message: "no DISPLAY or WAYLAND_DISPLAY set; auto-paste needs a graphical session".into(),
+                fix: None,
+            });
+        }
+    }
+
+    // 11. Per-app profile detection (Linux only - macOS always has NSWorkspace)
+    #[cfg(not(target_os = "macos"))]
+    checks.push(linux_app_detection_check());
 
     DoctorReport::from_checks(checks)
 }
 
+#[cfg(not(target_os = "macos"))]
+fn linux_app_detection_check() -> Check {
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+
+    if which("kdotool") {
+        return Check {
+            name: "app_detection".into(),
+            status: CheckStatus::Pass,
+            message: "kdotool found; per-app profiles work on KDE Plasma (X11 or Wayland)".into(),
+            fix: None,
+        };
+    }
+    if session == "x11" && which("xdotool") {
+        return Check {
+            name: "app_detection".into(),
+            status: CheckStatus::Pass,
+            message: "xdotool found on an X11 session; per-app profiles enabled".into(),
+            fix: None,
+        };
+    }
+    if desktop.to_ascii_lowercase().contains("kde") {
+        return Check {
+            name: "app_detection".into(),
+            status: CheckStatus::Warn,
+            message: "KDE Plasma detected but kdotool is missing; every dictation will use the default profile".into(),
+            fix: Some(install_hint("kdotool")),
+        };
+    }
+    if session == "x11" {
+        return Check {
+            name: "app_detection".into(),
+            status: CheckStatus::Warn,
+            message: "X11 session but xdotool is missing; every dictation will use the default profile".into(),
+            fix: Some(install_hint("xdotool")),
+        };
+    }
+    Check {
+        name: "app_detection".into(),
+        status: CheckStatus::Info,
+        message: format!(
+            "no supported active-window query method on this desktop ({desktop}, {session}); every dictation uses the default profile"
+        ),
+        fix: None,
+    }
+}
+
 enum OllamaCheck {
-    Ok,
+    Ok { model_size_bytes: Option<u64> },
     Unreachable,
     MissingModel,
 }
@@ -320,15 +439,91 @@ fn check_ollama(model: &str) -> OllamaCheck {
     let Some(models) = body.get("models").and_then(|m| m.as_array()) else {
         return OllamaCheck::MissingModel;
     };
-    let names: Vec<String> = models
-        .iter()
-        .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-        .collect();
-    if names.iter().any(|n| model_matches(n, model)) {
-        OllamaCheck::Ok
-    } else {
-        OllamaCheck::MissingModel
+    let matched = models.iter().find(|m| {
+        m.get("name")
+            .and_then(|n| n.as_str())
+            .is_some_and(|n| model_matches(n, model))
+    });
+    match matched {
+        Some(m) => OllamaCheck::Ok {
+            model_size_bytes: m.get("size").and_then(|s| s.as_u64()),
+        },
+        None => OllamaCheck::MissingModel,
     }
+}
+
+/// A model that's large relative to total RAM forces the OS to swap during
+/// inference, which doesn't just slow things down - it can push a single
+/// dictation's cleanup step past Vox's request timeout entirely. Observed
+/// on an 8GB/Linux machine: a ~2GB model took 4+ minutes (and counting) for
+/// a trivial prompt once system + model memory exceeded physical RAM,
+/// against a 60s timeout; a ~1.3GB model on the same machine responded in
+/// single-digit seconds. macOS's unified memory and Metal acceleration
+/// change this enough that the same heuristic doesn't apply there.
+#[cfg(target_os = "macos")]
+fn ollama_model_fit_check(model: &str, _model_size_bytes: Option<u64>) -> Check {
+    Check {
+        name: "ollama".into(),
+        status: CheckStatus::Pass,
+        message: format!("ollama reachable; model {model} present"),
+        fix: None,
+    }
+}
+
+// Deliberately not a memory-fit ratio formula: "available RAM" swings wildly
+// with whatever else happens to be open when `vox doctor` runs, so a ratio
+// against it is unstable, and a ratio against *total* RAM was tried first
+// and proved too permissive - it didn't flag the exact case measured below.
+// These are the two real data points from an 8GB Fedora/KDE Wayland laptop
+// under normal desktop load (browser, editor, the usual): a 1.3GB model
+// (llama3.2:1b) responded in single-digit seconds; a 2.0GB model
+// (llama3.2:latest, the default) took 4+ minutes and never completed within
+// even a 240s timeout, well past Vox's real 60s one. The thresholds below
+// draw the line between those two points, on machines under 12GB total RAM.
+#[cfg(not(target_os = "macos"))]
+const LOW_RAM_THRESHOLD_BYTES: u64 = 12_000_000_000;
+#[cfg(not(target_os = "macos"))]
+const LARGE_MODEL_THRESHOLD_BYTES: u64 = 1_500_000_000;
+
+#[cfg(not(target_os = "macos"))]
+fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
+    let base_message = format!("ollama reachable; model {model} present");
+    let (Some(model_bytes), Some(total_ram_bytes)) = (model_size_bytes, total_ram_bytes()) else {
+        return Check {
+            name: "ollama".into(),
+            status: CheckStatus::Pass,
+            message: base_message,
+            fix: None,
+        };
+    };
+
+    if total_ram_bytes < LOW_RAM_THRESHOLD_BYTES && model_bytes > LARGE_MODEL_THRESHOLD_BYTES {
+        Check {
+            name: "ollama".into(),
+            status: CheckStatus::Warn,
+            message: format!(
+                "{base_message}, but it's {:.1}GB on a {:.1}GB-RAM machine; expect slow or timed-out LLM cleanup under normal desktop load",
+                model_bytes as f64 / 1e9,
+                total_ram_bytes as f64 / 1e9,
+            ),
+            fix: Some("try a smaller model, e.g. `ollama pull llama3.2:1b` and set llm_model in settings.yaml".into()),
+        }
+    } else {
+        Check {
+            name: "ollama".into(),
+            status: CheckStatus::Pass,
+            message: base_message,
+            fix: None,
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn total_ram_bytes() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = contents.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
 }
 
 pub fn model_matches(a: &str, b: &str) -> bool {
@@ -349,4 +544,37 @@ fn which(bin: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn install_hint(pkg: &str) -> String {
+    format!("brew install {pkg}")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_hint(pkg: &str) -> String {
+    // Ollama isn't packaged in the major distro repos; the vendor's install
+    // script is the documented path everywhere.
+    if pkg == "ollama" {
+        return "curl -fsSL https://ollama.com/install.sh | sh".into();
+    }
+    if which("dnf") {
+        format!("sudo dnf install {pkg}")
+    } else if which("apt") || which("apt-get") {
+        format!("sudo apt install {pkg}")
+    } else if which("pacman") {
+        format!("sudo pacman -S {pkg}")
+    } else {
+        format!("install {pkg} with your distro's package manager")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ollama_start_hint() -> String {
+    "open -ga Ollama  # or: ollama serve".into()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ollama_start_hint() -> String {
+    "ollama serve  # or: systemctl --user start ollama, if you set that up".into()
 }

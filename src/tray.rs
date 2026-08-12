@@ -22,7 +22,7 @@ use crate::context::AppDetector;
 #[cfg(target_os = "macos")]
 use crate::context::MacAppDetector;
 #[cfg(not(target_os = "macos"))]
-use crate::context::StubAppDetector;
+use crate::context::LinuxAppDetector;
 use crate::error::{Result, VoxError};
 use crate::history::{self, DictationRecord};
 use crate::inject::{AutoPasteInjector, ClipboardInjector};
@@ -107,11 +107,7 @@ fn build_pipeline(settings: &Settings, model_path: &std::path::Path) -> Result<P
     #[cfg(target_os = "macos")]
     let detector: Box<dyn AppDetector> = Box::new(MacAppDetector::new(settings.clone()));
     #[cfg(not(target_os = "macos"))]
-    let detector: Box<dyn AppDetector> = Box::new(StubAppDetector::with_bundle(
-        "unknown",
-        "Unknown",
-        settings,
-    ));
+    let detector: Box<dyn AppDetector> = Box::new(LinuxAppDetector::new(settings.clone()));
 
     let transcriber = LocalWhisper::new(model_path)?
         .with_input_language(settings.input_language.clone())
@@ -426,6 +422,11 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     });
 }
 
+#[cfg(target_os = "macos")]
+const PASTE_HINT: &str = "Vox: on clipboard (Cmd+V)";
+#[cfg(not(target_os = "macos"))]
+const PASTE_HINT: &str = "Vox: on clipboard (Ctrl+V)";
+
 fn status_for_strategy(strategy: &str) -> &'static str {
     if strategy.contains("clipboard kept") {
         "Vox: paste sent (clipboard kept)"
@@ -434,7 +435,7 @@ fn status_for_strategy(strategy: &str) -> &'static str {
     } else if strategy.contains("Accessibility") {
         "Vox: clipboard - grant Accessibility"
     } else {
-        "Vox: on clipboard (Cmd+V)"
+        PASTE_HINT
     }
 }
 

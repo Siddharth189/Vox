@@ -3,7 +3,14 @@
 set -euo pipefail
 
 NAME="${1:-small}"
-MODELS_DIR="${VOX_MODELS_DIR:-${HOME}/Library/Application Support/vox/models}"
+if [[ -z "${VOX_MODELS_DIR:-}" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    VOX_MODELS_DIR="${HOME}/Library/Application Support/vox/models"
+  else
+    VOX_MODELS_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/vox/models"
+  fi
+fi
+MODELS_DIR="${VOX_MODELS_DIR}"
 DEST="${MODELS_DIR}/ggml-${NAME}.bin"
 URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${NAME}.bin"
 

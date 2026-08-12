@@ -9,8 +9,19 @@ use crate::inject::TextInjector;
 use crate::model::{AppContext, InjectionResult};
 use crate::permissions;
 
+#[cfg(target_os = "macos")]
 const ACTIVATION_DELAY: Duration = Duration::from_millis(120);
 const RESTORE_DELAY: Duration = Duration::from_millis(700);
+
+#[cfg(target_os = "macos")]
+const SYNTHESIZED_KEPT_STRATEGY: &str = "auto-paste sent (cg-event, clipboard kept)";
+#[cfg(not(target_os = "macos"))]
+const SYNTHESIZED_KEPT_STRATEGY: &str = "auto-paste sent (synthesized keystroke, clipboard kept)";
+
+#[cfg(target_os = "macos")]
+const UNAVAILABLE_STRATEGY: &str = "clipboard (grant Accessibility for auto-paste)";
+#[cfg(not(target_os = "macos"))]
+const UNAVAILABLE_STRATEGY: &str = "clipboard (auto-paste unavailable on this session)";
 
 pub struct AutoPasteInjector;
 
@@ -39,13 +50,14 @@ impl TextInjector for AutoPasteInjector {
             });
         }
 
-        // TCC can lie for locally-built/ad-hoc apps - still try synthesize.
+        // TCC can lie for locally-built/ad-hoc apps on macOS, and there is no
+        // equivalent trust check on Linux at all - still try synthesize.
         if synthesize_paste().is_ok() {
             thread::sleep(RESTORE_DELAY);
             // Do not restore clipboard - keep dictated text as safety net.
             return Ok(InjectionResult {
                 injected_chars: chars,
-                strategy: "auto-paste sent (cg-event, clipboard kept)".into(),
+                strategy: SYNTHESIZED_KEPT_STRATEGY.into(),
             });
         }
 
@@ -62,7 +74,7 @@ impl TextInjector for AutoPasteInjector {
 
         Ok(InjectionResult {
             injected_chars: chars,
-            strategy: "clipboard (grant Accessibility for auto-paste)".into(),
+            strategy: UNAVAILABLE_STRATEGY.into(),
         })
     }
 
@@ -102,16 +114,29 @@ fn try_enigo_paste() -> Result<()> {
 
     let mut enigo =
         Enigo::new(&Settings::default()).map_err(|e| VoxError::Injection(e.to_string()))?;
+
+    // macOS pastes with Cmd+V; everywhere else it's Ctrl+V.
+    #[cfg(target_os = "macos")]
+    let modifier = Key::Meta;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Key::Control;
+
+    // kVK_ANSI_V (9) is a macOS-only raw keycode. Elsewhere, enigo's portable
+    // Unicode('v') maps to the right physical key for the active layout.
+    #[cfg(target_os = "macos")]
+    let paste_key = Key::Other(9);
+    #[cfg(not(target_os = "macos"))]
+    let paste_key = Key::Unicode('v');
+
     enigo
-        .key(Key::Meta, Direction::Press)
+        .key(modifier, Direction::Press)
         .map_err(|e| VoxError::Injection(e.to_string()))?;
-    // kVK_ANSI_V = 9
     enigo
-        .key(Key::Other(9), Direction::Click)
+        .key(paste_key, Direction::Click)
         .map_err(|e| VoxError::Injection(e.to_string()))?;
     thread::sleep(Duration::from_millis(100));
     enigo
-        .key(Key::Meta, Direction::Release)
+        .key(modifier, Direction::Release)
         .map_err(|e| VoxError::Injection(e.to_string()))?;
     Ok(())
 }

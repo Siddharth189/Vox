@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod mac_detector;
+#[cfg(not(target_os = "macos"))]
+mod linux_detector;
 
 use crate::config::Settings;
 use crate::error::Result;
@@ -38,3 +40,5 @@ impl AppDetector for StubAppDetector {
 
 #[cfg(target_os = "macos")]
 pub use mac_detector::MacAppDetector;
+#[cfg(not(target_os = "macos"))]
+pub use linux_detector::LinuxAppDetector;

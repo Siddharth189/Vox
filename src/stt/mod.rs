@@ -1,12 +1,6 @@
-#[cfg(target_os = "macos")]
 mod local_whisper;
-#[cfg(not(target_os = "macos"))]
-mod local_whisper_stub;
 
-#[cfg(target_os = "macos")]
 pub use local_whisper::LocalWhisper;
-#[cfg(not(target_os = "macos"))]
-pub use local_whisper_stub::LocalWhisper;
 
 use crate::error::Result;
 use crate::model::{AppContext, AudioChunk, Transcript};
