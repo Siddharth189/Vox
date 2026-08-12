@@ -96,6 +96,7 @@ window.VoxHistory = {
       await load();
     });
 
+    this.reload = load;
     load();
   },
 };

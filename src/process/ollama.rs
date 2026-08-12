@@ -26,6 +26,16 @@ pub fn scale_num_predict(word_count: usize) -> usize {
     (word_count * 3).clamp(MIN_NUM_PREDICT, MAX_NUM_PREDICT)
 }
 
+#[cfg(target_os = "macos")]
+fn low_resource_mode() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn low_resource_mode() -> bool {
+    crate::config::low_resource_mode()
+}
+
 pub struct OllamaProcessor {
     host: String,
     model: String,
@@ -106,8 +116,10 @@ impl OllamaProcessor {
             out_trim.eq_ignore_ascii_case("English") || out_trim.eq_ignore_ascii_case("Hindi");
 
         let examples = if mixed_input || targeted_code_switch {
+            // Keep these even in low-resource mode: Hinglish/code-switch handling
+            // is the case the small model needs the most guidance on.
             code_switch_fewshot(&self.output_language)
-        } else if !translating {
+        } else if !translating && !low_resource_mode() {
             fewshot()
         } else {
             vec![]

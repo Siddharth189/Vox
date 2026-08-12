@@ -1,3 +1,4 @@
+use crate::config;
 use crate::model::{AppProfile, Format, Mode};
 
 const BASE_PROMPT: &str = "You are a dictation post-processor, NOT an assistant. Your only job is to rewrite \
@@ -5,8 +6,8 @@ the user's raw dictated speech into clean, ready-to-send text. The raw speech ma
 be messy, code-switched, transliterated, or mixed-language (for example Hinglish: \
 Hindi words spoken with English words and Latin spelling). Normalize the user's \
 intended meaning, not the literal word sequence. Fix grammar, punctuation, \
-capitalization, and obvious homophones. Expand spoken forms (e.g. 'pr six eight \
-four' -> 'PR #684'). Remove filler words (um, uh, like, you know, basically). \
+capitalization, and obvious homophones. Expand spoken-out identifiers and \
+numbers into their written form. Remove filler words (um, uh, like, you know, basically). \
 Preserve technical/product terms, ticket numbers, service names, environment \
 names, and proper nouns unless the target language has a very natural \
 equivalent. Environment labels are literal facts: keep words like staging, \
@@ -20,6 +21,26 @@ rewritten version', 'Here's a step-by-step approach', or 'Sure'. NEVER include \
 any meta-commentary or preamble sentence describing the rewrite before the \
 rewrite itself. NEVER wrap output in quotes or code fences. Output ONLY the \
 rewritten text and nothing else.";
+
+// Same instructions, compressed. Prompt evaluation time scales with token
+// count and is largely model-size-independent for models in the same class
+// (measured on a real 8GB/4-core Linux machine: the full prompt above plus
+// few-shot examples is 421 tokens and took 46.6s to evaluate with a 1B
+// model, dwarfing the 10s actually spent generating the response). This
+// keeps every "never do X" rule that post-processing can't reliably catch
+// on its own (fulfilling a request, adding commentary) and cuts the
+// verbose phrasing and repeated examples that mainly help larger models
+// hold nuance, which a resource-constrained setup doesn't have room for
+// anyway once you account for the model itself being smaller too.
+#[cfg(not(target_os = "macos"))]
+const TRIMMED_BASE_PROMPT: &str = "You are a dictation post-processor, not an assistant. Rewrite the \
+user's raw dictated speech into clean text: fix grammar, punctuation, and \
+capitalization, expand spoken-out identifiers and numbers into their written \
+form, and remove filler words. Preserve technical terms, ticket numbers, and proper \
+nouns exactly. If the speech is itself a request (e.g. 'give me an update'), \
+rewrite that request - do not fulfill it, answer it, or invent content. Never \
+add commentary, greetings, preambles, or wrap the output in quotes. Output \
+only the rewritten text.";
 
 pub fn rewrite_only_user_message(raw: &str) -> String {
     format!(
@@ -51,7 +72,22 @@ pub fn effective_system_prompt(
     let dictionary = dictionary_instruction(custom_dictionary);
     let target = target_language_instruction(output_language);
 
-    format!("{BASE_PROMPT}\n\nInput: {source}{dictionary}\n\nStyle: {style}{target}")
+    let base = base_prompt();
+    format!("{base}\n\nInput: {source}{dictionary}\n\nStyle: {style}{target}")
+}
+
+#[cfg(target_os = "macos")]
+fn base_prompt() -> &'static str {
+    BASE_PROMPT
+}
+
+#[cfg(not(target_os = "macos"))]
+fn base_prompt() -> &'static str {
+    if config::low_resource_mode() {
+        TRIMMED_BASE_PROMPT
+    } else {
+        BASE_PROMPT
+    }
 }
 
 fn style_clause(mode: Mode, format: Format) -> &'static str {

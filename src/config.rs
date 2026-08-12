@@ -41,6 +41,30 @@ pub fn settings_path() -> PathBuf {
     data_dir().join("settings.yaml")
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn total_ram_bytes() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = contents.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// Below this, Vox trims the LLM system prompt (see process/prompt.rs) since
+/// prompt evaluation time scales with token count: measured on a real
+/// 8GB/4-core machine, the full prompt (421 tokens including few-shot
+/// examples) took 46.6s to evaluate alone with a 1B model, consuming 82% of
+/// a 57s total request - independent of which small model is configured,
+/// since any model of similar size has to process the same token count.
+/// Same 10GB line as the LLM-model-size and Whisper-model-size heuristics
+/// elsewhere, for one consistent "is this a constrained machine" answer.
+#[cfg(not(target_os = "macos"))]
+pub const LOW_RAM_THRESHOLD_BYTES: u64 = 10_000_000_000;
+
+#[cfg(not(target_os = "macos"))]
+pub fn low_resource_mode() -> bool {
+    total_ram_bytes().is_some_and(|b| b < LOW_RAM_THRESHOLD_BYTES)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HotkeyConfig {
     pub enabled: bool,

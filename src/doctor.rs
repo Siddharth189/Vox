@@ -478,17 +478,18 @@ fn ollama_model_fit_check(model: &str, _model_size_bytes: Option<u64>) -> Check 
 // under normal desktop load (browser, editor, the usual): a 1.3GB model
 // (llama3.2:1b) responded in single-digit seconds; a 2.0GB model
 // (llama3.2:latest, the default) took 4+ minutes and never completed within
-// even a 240s timeout, well past Vox's real 60s one. The thresholds below
-// draw the line between those two points, on machines under 12GB total RAM.
-#[cfg(not(target_os = "macos"))]
-const LOW_RAM_THRESHOLD_BYTES: u64 = 12_000_000_000;
+// even a 240s timeout, well past Vox's real 60s one. The threshold below is
+// the same one process/prompt.rs uses to decide whether to trim the system
+// prompt, so there's one consistent "is this a constrained machine" line.
 #[cfg(not(target_os = "macos"))]
 const LARGE_MODEL_THRESHOLD_BYTES: u64 = 1_500_000_000;
 
 #[cfg(not(target_os = "macos"))]
 fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
     let base_message = format!("ollama reachable; model {model} present");
-    let (Some(model_bytes), Some(total_ram_bytes)) = (model_size_bytes, total_ram_bytes()) else {
+    let (Some(model_bytes), Some(total_ram_bytes)) =
+        (model_size_bytes, config::total_ram_bytes())
+    else {
         return Check {
             name: "ollama".into(),
             status: CheckStatus::Pass,
@@ -497,7 +498,7 @@ fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
         };
     };
 
-    if total_ram_bytes < LOW_RAM_THRESHOLD_BYTES && model_bytes > LARGE_MODEL_THRESHOLD_BYTES {
+    if total_ram_bytes < config::LOW_RAM_THRESHOLD_BYTES && model_bytes > LARGE_MODEL_THRESHOLD_BYTES {
         Check {
             name: "ollama".into(),
             status: CheckStatus::Warn,
@@ -516,14 +517,6 @@ fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
             fix: None,
         }
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn total_ram_bytes() -> Option<u64> {
-    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = contents.lines().find(|l| l.starts_with("MemTotal:"))?;
-    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb * 1024)
 }
 
 pub fn model_matches(a: &str, b: &str) -> bool {

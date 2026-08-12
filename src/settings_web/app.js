@@ -112,7 +112,12 @@ async function saveGeneral() {
 
 async function boot() {
   document.querySelectorAll("nav.tabs button").forEach((btn) => {
-    btn.addEventListener("click", () => showPage(btn.dataset.page));
+    btn.addEventListener("click", () => {
+      showPage(btn.dataset.page);
+      if (btn.dataset.page === "history" && window.VoxHistory?.reload) {
+        window.VoxHistory.reload();
+      }
+    });
   });
   document.getElementById("save_general").addEventListener("click", saveGeneral);
   ["input_language", "output_language", "system_override"].forEach((id) => {
