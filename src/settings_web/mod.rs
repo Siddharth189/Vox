@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::thread;
 
 use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::Request;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -99,41 +100,38 @@ async fn get_settings() -> Json<Settings> {
     Json(Settings::load())
 }
 
+// Per spec: output_language, whisper_model, llm_model, auto_paste, and
+// custom_dictionary are fields the UI always sends and always applies — kept
+// required (non-Option) so a client bug that omits one fails the request
+// instead of silently no-op'ing. input_language/hotkey/custom_aliases/
+// profiles/system_message_override are genuinely optional and, if omitted,
+// leave the existing setting untouched (input_language instead defaults to
+// "auto", per spec).
 #[derive(Debug, Deserialize)]
 pub struct SettingsPatch {
-    pub output_language: Option<String>,
+    pub output_language: String,
     pub input_language: Option<String>,
-    pub whisper_model: Option<String>,
-    pub llm_model: Option<String>,
-    pub auto_paste: Option<bool>,
+    pub whisper_model: String,
+    pub llm_model: String,
+    pub auto_paste: bool,
     pub hotkey: Option<HotkeyConfig>,
-    pub custom_dictionary: Option<Vec<String>>,
+    pub custom_dictionary: Vec<String>,
     pub custom_aliases: Option<HashMap<String, Vec<String>>>,
     pub profiles: Option<HashMap<String, ProfileConfig>>,
     pub system_message_override: Option<Option<String>>,
 }
 
 fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
-    if let Some(v) = patch.output_language {
-        settings.output_language = v;
-    }
+    settings.output_language = patch.output_language;
     settings.input_language = patch
         .input_language
         .unwrap_or_else(|| "auto".into());
-    if let Some(v) = patch.whisper_model {
-        settings.whisper_model = v;
-    }
-    if let Some(v) = patch.llm_model {
-        settings.llm_model = v;
-    }
-    if let Some(v) = patch.auto_paste {
-        settings.auto_paste = v;
-    }
+    settings.whisper_model = patch.whisper_model;
+    settings.llm_model = patch.llm_model;
+    settings.auto_paste = patch.auto_paste;
+    settings.custom_dictionary = patch.custom_dictionary;
     if let Some(v) = patch.hotkey {
         settings.hotkey = v;
-    }
-    if let Some(v) = patch.custom_dictionary {
-        settings.custom_dictionary = v;
     }
     if let Some(v) = patch.custom_aliases {
         settings.custom_aliases = v;
@@ -146,7 +144,12 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
 }
 
-async fn post_settings(Json(patch): Json<SettingsPatch>) -> Response {
+async fn post_settings(payload: Result<Json<SettingsPatch>, JsonRejection>) -> Response {
+    let Json(patch) = match payload {
+        Ok(json) => json,
+        Err(rejection) => return rejection.into_response(),
+    };
+
     if let Some(ref profiles) = patch.profiles {
         if !profiles.contains_key("default") {
             return (
