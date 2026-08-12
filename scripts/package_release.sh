@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# package_release.sh — zip/dmg release artifacts from a built Vox.app.
+# package_release.sh - zip/dmg release artifacts from a built Vox.app.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

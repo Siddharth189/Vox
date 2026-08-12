@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — end-to-end Vox installer for macOS.
+# install.sh - end-to-end Vox installer for macOS.
 set -euo pipefail
 
 ROOT_HINT="$(cd "$(dirname "$0")/.." && pwd)"

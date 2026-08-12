@@ -1,4 +1,4 @@
-//! Vox — local-first macOS menu-bar voice dictation.
+//! Vox - local-first macOS menu-bar voice dictation.
 
 pub mod audio;
 pub mod config;

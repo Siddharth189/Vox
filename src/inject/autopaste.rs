@@ -39,10 +39,10 @@ impl TextInjector for AutoPasteInjector {
             });
         }
 
-        // TCC can lie for locally-built/ad-hoc apps — still try synthesize.
+        // TCC can lie for locally-built/ad-hoc apps - still try synthesize.
         if synthesize_paste().is_ok() {
             thread::sleep(RESTORE_DELAY);
-            // Do not restore clipboard — keep dictated text as safety net.
+            // Do not restore clipboard - keep dictated text as safety net.
             return Ok(InjectionResult {
                 injected_chars: chars,
                 strategy: "auto-paste sent (cg-event, clipboard kept)".into(),

@@ -4,11 +4,11 @@ Local web UI served by the tray process at [http://127.0.0.1:8722](http://127.0.
 
 ## Pages
 
-- **General** — input/output language, Whisper + Ollama model pickers, auto-paste,
+- **General** - input/output language, Whisper + Ollama model pickers, auto-paste,
   optional system-message override with live prompt preview, hotkey editor.
-- **Dictionary** — custom dictionary terms + `Canonical = alias1, alias2` aliases.
-- **Profiles** — per-bundle-id format/privacy table (`default` required).
-- **History** — recent dictations with latency breakdown and inline correction
+- **Dictionary** - custom dictionary terms + `Canonical = alias1, alias2` aliases.
+- **Profiles** - per-bundle-id format/privacy table (`default` required).
+- **History** - recent dictations with latency breakdown and inline correction
   learning (`POST /api/learn-correction`).
 
 ## Design notes

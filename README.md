@@ -1,86 +1,62 @@
 # Vox
 
 [![CI](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml/badge.svg)](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Local-first macOS menu-bar voice dictation. Hold a global hotkey, speak, release —
-Whisper transcribes on-device, Ollama cleans the text for the focused app, then
-Vox pastes at the cursor. No cloud calls on the default path.
+A local-first, menu-bar voice dictation app for macOS. Hold a global hotkey, speak, release.
+Whisper transcribes on-device, a local Ollama model cleans up the text for whatever app you're
+in, and the result lands at your cursor. Nothing leaves your machine on the default path.
 
 ## Features
 
-- **Hold-to-talk global hotkey** — hold, speak, release; text lands at your cursor a moment
-  later. Default `Control+Alt+Space`, fully rebindable from the settings UI.
-- **100% local pipeline** — speech-to-text (Whisper via `whisper-rs`, Metal-accelerated) and
-  text cleanup (a local Ollama model) both run on-device. Nothing is ever sent to the cloud
-  on the default path.
-- **Per-app behavior profiles** — set a format (clean prose, casual, professional email,
-  code-editor-safe, shell command, Markdown, …) and privacy level per application, keyed by
-  bundle ID. Ships with sane defaults for Slack, VS Code, Terminal, Alacritty, and 1Password.
-- **Per-app privacy switch** — mark any app "disabled" (1Password by default) and Vox will
-  never transcribe, process, or inject text while that app is focused.
-- **LLM cleanup tuned for dictation, not chat** — fixes grammar/punctuation/filler words,
-  expands spoken forms ("pr six eight four" → "PR #684"), and rewrites *requests* instead of
+- **Hold-to-talk global hotkey.** Hold, speak, release. Default is `Control+Alt+Space`, fully
+  rebindable from the settings UI.
+- **Fully local pipeline.** Speech-to-text runs on-device via Whisper (Metal-accelerated), and
+  text cleanup runs against a local Ollama model. No cloud calls, no API keys, no telemetry.
+- **Per-app profiles.** Choose a writing style (clean prose, casual, professional email,
+  code-editor-safe, shell command, Markdown) and a privacy level for each application,
+  keyed by bundle ID. Ships with sensible defaults for Slack, VS Code, Terminal, Alacritty,
+  and 1Password.
+- **Per-app privacy switch.** Mark any app as disabled (1Password is disabled by default) and
+  Vox will never transcribe, process, or inject text while that app is focused.
+- **Dictation-aware LLM cleanup.** Fixes grammar, punctuation, and filler words, expands
+  spoken forms ("pr six eight four" becomes "PR #684"), and rewrites requests instead of
   fulfilling them, so saying "write two lines summarizing the outage" produces two lines of
   prose, not an assistant's reply.
-- **Multilingual & code-switched speech** — auto-detects the spoken language by default, or
-  pin an input/output language explicitly. Purpose-built handling for Hinglish and other
-  Hindi/English code-switched speech, including a few-shot-tuned translation mode.
-  Recognized language codes: English, Hindi, Tamil, Spanish, Japanese, French, German,
-  Portuguese, Chinese, Arabic, Korean, Italian, Russian.
-- **Custom dictionary with auto-generated aliases** — teach Vox proper nouns, product names,
-  and jargon. Multi-word/hyphenated/slash terms (e.g. `CI/CD`) automatically get sensible
-  alias variants so the LLM's spelling gets normalized back to your canonical form.
-- **Learns from your corrections** — edit a past dictation in the history view and Vox
-  aligns the change against your dictionary to learn a new spelling alias automatically —
-  no manual dictionary editing required for the mistakes you actually make.
-- **Auto-paste with layered fallbacks** — tries a trusted synthetic paste, falls back to
-  `osascript`, and worst case always leaves the cleaned text on your clipboard so you never
-  lose a dictation to a missing permission.
-- **Custom system prompt override** — for full control, replace the generated system prompt
-  entirely with your own, previewed live before you save.
-- **Local settings web UI** (`http://127.0.0.1:8722`) — language, models, hotkey, per-app
-  profiles, custom dictionary/aliases, and a dictation history/diagnostics view with
-  per-stage latency (privacy check → transcribe → LLM cleanup → inject) for every dictation.
-- **`vox doctor`** — one command to check the whole stack: Whisper model present and valid,
-  Ollama reachable with your configured model pulled, Accessibility permission granted,
-  build toolchain present.
-- **Menu-bar only, no Dock icon** — a lightweight `LSUIElement` app; a template tray icon
-  goes red while recording.
-- **Every settings/history file is written `0600`/`0700`** — no dictation transcript or
-  config is ever left world-readable on disk.
-
-## Status
-
-Vox is macOS-only in practice (menu bar, Metal Whisper, AppKit, Accessibility auto-paste).
-Correctness is verified by CI on a `macos-14` GitHub Actions runner on every push — see
-the badge / Actions tab for current build & test status.
-
-| Check | Where it runs |
-|---|---|
-| `cargo build --release`, `cargo test`, `cargo clippy` | macOS CI (`.github/workflows/ci.yml`) |
-| `vox doctor` | macOS only — checks Whisper model, Ollama reachability, permissions |
-| Full tray / Metal Whisper / auto-paste | **Requires macOS**, manual verification |
+- **Multilingual and code-switched speech.** Auto-detects the spoken language by default, or
+  pin an input/output language explicitly. Includes purpose-built handling for Hinglish and
+  other Hindi/English code-switched speech. Recognized languages: English, Hindi, Tamil,
+  Spanish, Japanese, French, German, Portuguese, Chinese, Arabic, Korean, Italian, Russian.
+- **Custom dictionary with automatic aliases.** Teach Vox proper nouns, product names, and
+  jargon. Multi-word or hyphenated terms (for example `CI/CD`) get sensible alias variants
+  automatically, so misheard spellings get normalized back to your canonical form.
+- **Learns from your corrections.** Edit a past dictation in the history view, and Vox aligns
+  the edit against your dictionary to learn a new spelling alias automatically.
+- **Auto-paste with layered fallbacks.** Tries a trusted synthetic paste, falls back to
+  `osascript`, and in the worst case always leaves the cleaned text on your clipboard so you
+  never lose a dictation to a missing permission.
+- **Custom system prompt override.** Replace the generated system prompt entirely with your
+  own, previewed live before you save.
+- **Local settings web UI** at `http://127.0.0.1:8722`: language, models, hotkey, per-app
+  profiles, custom dictionary and aliases, and a dictation history view with a per-stage
+  latency breakdown (privacy check, transcribe, LLM cleanup, inject) for every dictation.
+- **`vox doctor`** checks the whole stack in one command: Whisper model present and valid,
+  Ollama reachable with your configured model pulled, Accessibility permission granted, and
+  the build toolchain present.
+- **Menu bar only.** No Dock icon. The tray icon turns red while recording.
+- **Locked-down local storage.** Every settings and history file is written `0600`/`0700`, so
+  no dictation transcript or config is ever left world-readable on disk.
 
 ## Requirements
 
-- **macOS 13+ (Apple Silicon tested)** for the full product
-- Xcode Command Line Tools, `cmake`, Rust stable
-- [Ollama](https://ollama.com) + `ollama pull llama3.2`
-- Whisper ggml model via `scripts/download_model.sh`
+- macOS 13 or later (Apple Silicon tested)
+- Xcode Command Line Tools, `cmake`, and a stable Rust toolchain
+- [Ollama](https://ollama.com), with a model pulled (`ollama pull llama3.2`)
+- A Whisper ggml model, fetched via `scripts/download_model.sh`
 
-Root `Cargo.toml` gates Apple-only crates (`whisper-rs`, `core-graphics`, `core-foundation`,
-`objc2*`) behind `cfg(target_os = "macos")`, and several modules (STT, permissions,
-Accessibility injection) ship a non-macOS stub alongside the real implementation. This lets
-most of the crate's logic (config, prompt/dictionary rules, pipeline orchestration, settings
-web API) type-check and unit-test on Linux too — useful for contributors without a Mac —
-though `cpal` (audio capture) still needs your platform's native audio dev headers
-(e.g. `alsa-lib-devel` / `libasound2-dev` on Linux) to build.
+## Installation
 
-## Install (macOS)
-
-You need a local checkout first — `install.sh` builds from whatever source tree it's run
-from (it resolves its own repo root from its own path), it does not fetch anything on its
-own unless you explicitly ask it to. So: clone once, then run the script from inside it.
+Clone the repository, then run the installer from inside it:
 
 ```bash
 git clone git@github.com:Siddharth189/Vox.git
@@ -88,25 +64,25 @@ cd Vox
 ./scripts/install.sh
 ```
 
-`install.sh` is idempotent and safe to re-run (e.g. to update after a `git pull`) — it
-checks for required tools before installing them, and only writes a fresh `settings.yaml`
-if one doesn't already exist, so your saved settings/dictionary survive a reinstall. It
-installs the CLI to `~/.local/bin/vox`, packages `Vox.app` into `~/Applications/` (not
-`/Applications`), downloads the Whisper model, pulls the configured Ollama model, and starts
-the tray. Preview every step without touching your system with:
+`install.sh` builds Vox, installs the CLI to `~/.local/bin/vox`, packages `Vox.app` into
+`~/Applications` (not `/Applications`), downloads the Whisper model, pulls the configured
+Ollama model, and starts the tray. It's idempotent and safe to re-run after a `git pull`: it
+only writes a fresh `settings.yaml` if one doesn't already exist, so your saved settings and
+dictionary survive a reinstall.
+
+To preview every step without touching your system:
 
 ```bash
 VOX_INSTALL_DRY_RUN=1 ./scripts/install.sh
 ```
 
-If you'd rather have the installer fetch the source itself (no local clone), set
-`VOX_REPO_URL` and it will clone into `~/.cache/vox-src` for you:
+To let the installer fetch the source itself instead of cloning manually, set `VOX_REPO_URL`:
 
 ```bash
 VOX_REPO_URL=git@github.com:Siddharth189/Vox.git ./scripts/install.sh
 ```
 
-Manual install (no script):
+### Manual installation
 
 ```bash
 cargo build --release --locked
@@ -116,29 +92,64 @@ cp -R dist/Vox.app ~/Applications/
 open ~/Applications/Vox.app
 ```
 
-## CLI
+## Usage
+
+Hold the hotkey, speak, release. The cleaned-up text is pasted at your cursor.
 
 ```
-vox check
-vox doctor [--json]
-vox demo [--dry-run] "raw dictated text"
-vox listen [--secs 5]
-vox tray
-vox inject-test "text"
+vox check                 quick Ollama reachability check
+vox doctor [--json]       full readiness report
+vox demo [--dry-run] "text"   run text through the real LLM cleanup pipeline
+vox listen [--secs 5]     record from the mic once and clean up the result
+vox tray                  launch the menu-bar app
+vox inject-test "text"    exercise the auto-paste path directly
 ```
 
-Settings UI (tray running): http://127.0.0.1:8722
-Default hotkey: **Control+Alt+Space** (hold to talk).
+Open the settings UI at `http://127.0.0.1:8722` while the tray is running to configure
+languages, models, the hotkey, per-app profiles, and your custom dictionary.
 
-## Verify on macOS
+## How it works
+
+Each dictation flows through six stages: audio capture, privacy check, speech-to-text,
+app context detection, LLM cleanup, and injection. Every stage is a trait with a real and a
+fake implementation, so the pipeline can be tested end to end without a microphone, an LLM,
+or macOS itself. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full breakdown.
+
+## Development
+
+Vox is macOS-only in practice (menu bar, Metal Whisper, AppKit, Accessibility auto-paste), so
+correctness is verified by CI on a `macos-14` GitHub Actions runner on every push. Check the
+badge above or the Actions tab for current status.
 
 ```bash
 cargo test
 cargo build --release
+cargo clippy --all-targets --all-features
 ./target/release/vox doctor
 ./target/release/vox demo --dry-run "hey john review pr six eight four"
 ```
 
-## Layout
+Root `Cargo.toml` gates Apple-only crates (`whisper-rs`, `core-graphics`, `core-foundation`,
+`objc2*`) behind `cfg(target_os = "macos")`, and a few modules (speech-to-text, permissions,
+Accessibility injection) ship a non-macOS stub alongside the real implementation. This lets
+most of the crate, config, prompt and dictionary rules, pipeline orchestration, and the
+settings web API, type-check and unit-test on Linux too, which is useful if you're
+contributing without access to a Mac. `cpal` (audio capture) still needs your platform's
+native audio headers to build (for example `libasound2-dev` on Debian/Ubuntu, `alsa-lib-devel`
+on Fedora).
 
-See `docs/ARCHITECTURE.md`. Stages live under `src/` (audio → STT → privacy → process → inject).
+## Contributing
+
+Issues and pull requests are welcome. A few things to know before opening one:
+
+- Keep changes scoped. New behavior should land as a new trait implementation where possible,
+  not a rewrite of `pipeline.rs`.
+- Run `cargo test` and `cargo clippy` before submitting; CI runs both on `macos-14`.
+- If you're changing prompt text, few-shot examples, or dictionary normalization rules, add or
+  update a test in the same module. Those behaviors are easy to regress silently.
+- For anything platform-specific, check whether the change needs a non-macOS stub to keep the
+  crate buildable on Linux (see `src/stt/local_whisper_stub.rs` for the existing pattern).
+
+## License
+
+[MIT](LICENSE)

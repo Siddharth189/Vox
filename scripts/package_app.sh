@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# package_app.sh — build Vox.app bundle + codesign (ad-hoc by default).
+# package_app.sh - build Vox.app bundle + codesign (ad-hoc by default).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,7 +31,7 @@ APPL????
 EOF
 
 cat > "${APP}/Contents/Resources/README.txt" <<'EOF'
-Vox — local-first menu-bar voice dictation.
+Vox - local-first menu-bar voice dictation.
 Hold the global hotkey, speak, release. Text is transcribed and pasted locally.
 EOF
 

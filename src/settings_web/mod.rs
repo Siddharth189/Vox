@@ -40,7 +40,7 @@ pub fn start_background() {
         };
         rt.block_on(async {
             if let Err(e) = serve().await {
-                // Port already taken (another Vox) — exit silently
+                // Port already taken (another Vox) - exit silently
                 eprintln!("settings web server not started: {e}");
             }
         });
@@ -101,7 +101,7 @@ async fn get_settings() -> Json<Settings> {
 }
 
 // Per spec: output_language, whisper_model, llm_model, auto_paste, and
-// custom_dictionary are fields the UI always sends and always applies — kept
+// custom_dictionary are fields the UI always sends and always applies - kept
 // required (non-Option) so a client bug that omits one fails the request
 // instead of silently no-op'ing. input_language/hotkey/custom_aliases/
 // profiles/system_message_override are genuinely optional and, if omitted,
@@ -176,7 +176,7 @@ struct ModelsResponse {
 }
 
 async fn get_models() -> Json<ModelsResponse> {
-    // Blocking HTTP/fs on a dedicated pool — settings server uses a current_thread runtime.
+    // Blocking HTTP/fs on a dedicated pool - settings server uses a current_thread runtime.
     let result = tokio::task::spawn_blocking(|| ModelsResponse {
         whisper: list_whisper_models(),
         ollama: list_ollama_models(),

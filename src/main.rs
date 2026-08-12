@@ -59,7 +59,7 @@ fn real_main() -> Result<()> {
 fn print_usage() {
     eprintln!(
         "\
-Vox — local voice dictation
+Vox - local voice dictation
 
 Usage:
   vox check
@@ -118,7 +118,7 @@ fn cmd_check() -> Result<()> {
     };
     match processor.process(&req) {
         Ok(p) => {
-            println!("ollama ok — model replied:");
+            println!("ollama ok - model replied:");
             println!("{}", p.text);
             Ok(())
         }
@@ -254,7 +254,7 @@ fn cmd_inject_test(args: &[String]) -> Result<()> {
         profile: settings.profile_for("default"),
     };
     let result = AutoPasteInjector.inject(&text, &ctx)?;
-    println!("{} — {} chars", result.strategy, result.injected_chars);
+    println!("{} - {} chars", result.strategy, result.injected_chars);
     Ok(())
 }
 

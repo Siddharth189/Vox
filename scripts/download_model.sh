@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# download_model.sh — fetch a ggml whisper model into the Vox models dir.
+# download_model.sh - fetch a ggml whisper model into the Vox models dir.
 set -euo pipefail
 
 NAME="${1:-small}"

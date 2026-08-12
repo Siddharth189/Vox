@@ -25,7 +25,7 @@ jobs:
         run: command -v cmake || brew install cmake
 
       # fmt/clippy are informational for now (codebase hasn't been run through
-      # them under a working macOS toolchain yet) — tighten to hard-fail once green.
+      # them under a working macOS toolchain yet) - tighten to hard-fail once green.
       - name: cargo fmt --check
         continue-on-error: true
         run: cargo fmt --all -- --check
@@ -43,7 +43,7 @@ jobs:
   # Best-effort only: Vox is a macOS product (see the macos-14 job above for the
   # real correctness gate). This job exists so contributors without a Mac get
   # fast feedback on the platform-independent logic (config, prompt/dictionary
-  # rules, pipeline). It's allowed to fail — tray-icon/tao/global-hotkey/enigo
+  # rules, pipeline). It's allowed to fail - tray-icon/tao/global-hotkey/enigo
   # all need Linux-specific native GUI libs (GTK, libxdo, appindicator) whose
   # exact package set isn't verified here.
   linux-logic-check:

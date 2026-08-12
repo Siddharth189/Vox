@@ -256,7 +256,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                         hotkey_hint.set_text(hotkey_hint_text(&new_settings.hotkey));
                     }
                 }
-                // Do not assign runtime.settings here — refresh_if_changed compares
+                // Do not assign runtime.settings here - refresh_if_changed compares
                 // against the settings the pipeline was built with.
                 last_polled_mtime = Some(mtime);
             }
@@ -432,7 +432,7 @@ fn status_for_strategy(strategy: &str) -> &'static str {
     } else if strategy.starts_with("auto-paste") {
         "Vox: inserted at cursor"
     } else if strategy.contains("Accessibility") {
-        "Vox: clipboard — grant Accessibility"
+        "Vox: clipboard - grant Accessibility"
     } else {
         "Vox: on clipboard (Cmd+V)"
     }

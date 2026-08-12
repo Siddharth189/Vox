@@ -36,7 +36,7 @@ impl Transcriber for FakeTranscriber {
     }
 }
 
-/// Empty, or fully wrapped in `[...]` / `(...)` — whisper non-speech tokens.
+/// Empty, or fully wrapped in `[...]` / `(...)` - whisper non-speech tokens.
 pub fn is_non_speech(text: &str) -> bool {
     let t = text.trim();
     if t.is_empty() {
