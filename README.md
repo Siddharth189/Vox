@@ -1,5 +1,7 @@
 # Vox
 
+[![CI](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml/badge.svg)](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml)
+
 Local-first macOS menu-bar voice dictation. Hold a global hotkey, speak, release —
 Whisper transcribes on-device, Ollama cleans the text for the focused app, then
 Vox pastes at the cursor. No cloud calls on the default path.
