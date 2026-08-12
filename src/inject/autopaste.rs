@@ -111,15 +111,17 @@ fn synthesize_paste() -> Result<()> {
 
 // enigo's Linux backend tries a portal-authorized libei session before
 // falling back to plain X11/XTest. That portal negotiation is a blocking
-// D-Bus round trip enigo makes no promise about the duration of: on a
-// working setup it's near-instant once authorized, but on a compositor
-// with no working RemoteDesktop portal backend (confirmed in testing: a
-// broken permission-store lookup that never resolves, and this isn't
-// KDE-specific - most non-GNOME/KDE Wayland compositors don't implement
-// this portal interface for input at all) it can hang far longer than any
-// single dictation should ever wait. Bound it so a broken or absent portal
-// always falls through to the next strategy quickly instead of stalling
-// the whole pipeline.
+// D-Bus round trip enigo makes no promise about the duration of: once the
+// vendored restore_token patch (vendor/enigo) has a saved token, the
+// compositor silently reuses prior consent and this resolves in well under
+// a second. The first-ever call (or after the token is revoked) is
+// different: the compositor pops up a real permission dialog and a human
+// has to notice and click it, which routinely takes several seconds - and
+// on a compositor with no working RemoteDesktop portal backend at all this
+// can hang far longer than any single dictation should ever wait. Give the
+// one-time consent flow a real chance to complete without stalling the
+// common (already-authorized) case, which returns almost immediately
+// either way.
 #[cfg(target_os = "macos")]
 fn try_enigo_paste_bounded() -> Result<()> {
     try_enigo_paste()
@@ -127,7 +129,7 @@ fn try_enigo_paste_bounded() -> Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 fn try_enigo_paste_bounded() -> Result<()> {
-    const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(3);
+    const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(8);
     let (tx, rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let _ = tx.send(try_enigo_paste());
@@ -135,7 +137,7 @@ fn try_enigo_paste_bounded() -> Result<()> {
     match rx.recv_timeout(SYNTHESIS_TIMEOUT) {
         Ok(result) => result,
         Err(_) => Err(VoxError::Injection(
-            "keystroke synthesis timed out (no working input portal for this session)".into(),
+            "keystroke synthesis timed out (no working input portal for this session, or consent dialog not yet approved)".into(),
         )),
     }
 }

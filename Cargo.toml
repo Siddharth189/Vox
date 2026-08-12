@@ -60,3 +60,12 @@ enigo = { version = "0.6.1", features = ["libei_tokio"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Vendored, patched copy of enigo 0.6.1: upstream's libei/portal backend
+# requests persistent RemoteDesktop consent (PersistMode::Application) but
+# never saves or replays the restore_token, so the compositor's permission
+# dialog reappears on every single call instead of just once. See
+# vendor/enigo/src/linux/libei.rs for the patch. MIT-licensed, vendored
+# under vendor/enigo.
+[patch.crates-io]
+enigo = { path = "vendor/enigo" }
