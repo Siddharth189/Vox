@@ -96,8 +96,15 @@ impl Con {
     // passed restore_token: None on every call and never read the token
     // back out of the Start response, so the portal never actually
     // remembered consent and the compositor's permission dialog reappeared
-    // on every single invocation. Round-trip the token through a file so
-    // the dialog only needs to be approved once.
+    // on every single invocation. We capture and persist the token here so
+    // it's available if a future portal version can use it -
+    // xdg-desktop-portal-kde 6.6.4 cannot: passing a saved restore_token
+    // back into select_devices makes the whole request hang indefinitely
+    // (confirmed via journalctl - zero portal-side log activity for the
+    // full duration, versus a clear burst of protocol messages on a
+    // token-less call) rather than either erroring or skipping the dialog,
+    // which is worse than just asking every time. So the token is saved
+    // but deliberately NOT replayed below until that's fixed upstream.
     fn restore_token_path() -> std::path::PathBuf {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
@@ -142,7 +149,7 @@ impl Con {
             let remote_desktop = RemoteDesktop::new().await.unwrap();
             trace!("New desktop");
 
-            let saved_token = Self::load_restore_token();
+            let _saved_token_not_replayed_see_comment_above = Self::load_restore_token();
 
             // device_bitmask |= DeviceType::Touchscreen;
             let session = remote_desktop.create_session().await.unwrap();
@@ -150,7 +157,7 @@ impl Con {
                 .select_devices(
                     &session,
                     DeviceType::Keyboard | DeviceType::Pointer,
-                    saved_token.as_deref(),
+                    None,
                     ashpd::desktop::PersistMode::Application,
                 ) // TODO: Add DeviceType::Touchscreen once we support it in enigo
                 .await
@@ -171,15 +178,42 @@ impl Con {
         }
     }
 
+    // Vox patch: ashpd caches a single process-wide zbus::Connection behind
+    // a `static OnceLock` (see ashpd's proxy.rs). That connection's async
+    // executor task is bound to whichever tokio runtime first drove it.
+    // Upstream built a brand new throwaway current-thread runtime on every
+    // call and dropped it the moment the call returned, which tears down
+    // that executor - every call after the very first then hangs forever
+    // (no error, no panic - just an ashpd future that never wakes up again)
+    // waiting on a D-Bus reply nothing is left to deliver. Confirmed via
+    // debug logging: the first call in a process's lifetime shows full
+    // libei protocol activity (update/ping/device resumed/...); every call
+    // after that is completely silent until our caller's bounded timeout
+    // gives up. Reuse one runtime for the whole process instead of a fresh
+    // one per call so the connection's executor never dies underneath it.
     #[allow(unnecessary_wraps)] // The wrap is needed for the libei_tokio feature
     fn custom_block_on<F: Future>(f: F) -> Result<F::Output, NewConError> {
         #[cfg(feature = "libei_tokio")]
         if tokio::runtime::Handle::try_current().is_err() {
-            return Ok(tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .build()
-                .map_err(|_| NewConError::EstablishCon("failed to create tokio runtime"))?
-                .block_on(f));
+            // Vox's caller bounds how long it waits on this via a channel
+            // recv_timeout, but an abandoned call's thread is not actually
+            // killed - it keeps running in the background and can still be
+            // mid-.block_on() when the next dictation starts a fresh call.
+            // A current_thread runtime cannot have .block_on() entered from
+            // two OS threads concurrently, so use a small multi-thread
+            // runtime instead - each caller still blocks only its own
+            // thread, and the runtime's worker threads make concurrent
+            // callers safe.
+            static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
+                std::sync::OnceLock::new();
+            let rt = RUNTIME.get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_io()
+                    .build()
+                    .expect("failed to create the shared tokio runtime")
+            });
+            return Ok(rt.block_on(f));
         }
         Ok(futures::executor::block_on(f))
     }
