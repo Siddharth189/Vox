@@ -20,15 +20,6 @@ async function api(path, opts = {}) {
   return res.text();
 }
 
-function showPage(name) {
-  document.querySelectorAll(".page").forEach((el) => el.classList.remove("active"));
-  document.querySelectorAll("nav.tabs button").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.page === name);
-  });
-  const page = document.getElementById(`page-${name}`);
-  if (page) page.classList.add("active");
-}
-
 function fillSelect(el, values, current) {
   el.innerHTML = "";
   const set = new Set(values);
@@ -85,6 +76,13 @@ function readGeneralPatch() {
   };
 }
 
+function systemMessageMeta() {
+  const s = state.settings;
+  const custom = (s.system_message_override || "").trim();
+  const kind = custom ? "Custom override" : "Generated default";
+  return `Default profile · Mode auto · Input ${s.input_language || "auto"} · Output ${s.output_language || "auto"} · ${kind}`;
+}
+
 async function refreshSystemPreview() {
   const patch = readGeneralPatch();
   const res = await api("/api/system-message", {
@@ -92,37 +90,83 @@ async function refreshSystemPreview() {
     body: JSON.stringify(patch),
   });
   document.getElementById("system_preview").value = res.system_message || "";
+  document.getElementById("sysmsg_meta").textContent = systemMessageMeta();
 }
 
 async function saveGeneral() {
   const status = document.getElementById("general_status");
-  status.textContent = "Saving…";
+  const btn = document.getElementById("save_general");
+  const original = btn.textContent;
+  btn.textContent = "Saving…";
+  btn.disabled = true;
   try {
     const patch = readGeneralPatch();
     state.settings = await api("/api/settings", {
       method: "POST",
       body: JSON.stringify(patch),
     });
-    status.textContent = "Saved";
+    btn.textContent = "Saved";
+    if (status) status.textContent = "";
     await refreshSystemPreview();
   } catch (e) {
-    status.textContent = `Error: ${e.message}`;
+    btn.textContent = original;
+    if (status) status.textContent = `Error: ${e.message}`;
+    else alert(`Error saving: ${e.message}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1200);
   }
 }
 
-async function boot() {
-  document.querySelectorAll("nav.tabs button").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      showPage(btn.dataset.page);
-      if (btn.dataset.page === "history" && window.VoxHistory?.reload) {
+function setupSystemMessageControls() {
+  document.getElementById("sysmsg_refresh").addEventListener("click", () => {
+    refreshSystemPreview().catch((e) => alert(`Error: ${e.message}`));
+  });
+  document.getElementById("sysmsg_reset").addEventListener("click", () => {
+    document.getElementById("system_override").value = "";
+    refreshSystemPreview().catch(() => {});
+  });
+  document.getElementById("sysmsg_copy").addEventListener("click", async () => {
+    const text = document.getElementById("system_preview").value;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Clipboard API can be unavailable over plain http in some browsers;
+      // fall back to a manual select so the user can still Ctrl+C.
+      const el = document.getElementById("system_preview");
+      el.focus();
+      el.select();
+    }
+  });
+}
+
+function setupHistoryToggle() {
+  const toggle = document.getElementById("history_toggle");
+  const body = document.getElementById("history_body");
+  let mounted = false;
+  toggle.addEventListener("click", () => {
+    const open = body.classList.toggle("open");
+    toggle.textContent = open ? "Hide" : "Show";
+    if (open) {
+      if (!mounted && window.VoxHistory) {
+        window.VoxHistory.mount(body, state);
+        mounted = true;
+      } else if (window.VoxHistory?.reload) {
         window.VoxHistory.reload();
       }
-    });
+    }
   });
+}
+
+async function boot() {
   document.getElementById("save_general").addEventListener("click", saveGeneral);
   ["input_language", "output_language", "system_override"].forEach((id) => {
     document.getElementById(id).addEventListener("change", () => refreshSystemPreview().catch(() => {}));
   });
+  setupSystemMessageControls();
+  setupHistoryToggle();
 
   const [settings, models] = await Promise.all([
     api("/api/settings"),
@@ -132,9 +176,8 @@ async function boot() {
   state.models = models;
   applySettingsToForm(settings);
 
-  if (window.VoxDictionary) VoxDictionary.mount(document.getElementById("page-dictionary"), state);
-  if (window.VoxProfiles) VoxProfiles.mount(document.getElementById("page-profiles"), state);
-  if (window.VoxHistory) VoxHistory.mount(document.getElementById("page-history"), state);
+  if (window.VoxDictionary) VoxDictionary.mount(document.getElementById("section-dictionary"), state);
+  if (window.VoxProfiles) VoxProfiles.mount(document.getElementById("section-profiles"), state);
 
   await refreshSystemPreview();
 }

@@ -2,63 +2,20 @@
 
 window.VoxDictionary = {
   mount(root, state) {
-    root.innerHTML = `
-      <div class="card">
-        <h2>Custom dictionary</h2>
-        <p class="muted">One term per line. Preferred spellings bias Whisper and the LLM, then deterministic alias normalization runs after.</p>
-        <textarea id="dict_terms"></textarea>
-      </div>
-      <div class="card">
-        <h2>Aliases</h2>
-        <p class="muted">Format: <span class="mono">CanonicalTerm = alias1, alias2</span></p>
-        <textarea id="dict_aliases"></textarea>
-      </div>
-      <div class="actions">
-        <button class="primary" id="save_dict">Save dictionary</button>
-        <span class="status" id="dict_status"></span>
-      </div>
-    `;
-
-    const termsEl = root.querySelector("#dict_terms");
-    const aliasesEl = root.querySelector("#dict_aliases");
+    const table = root.querySelector("#dict_table");
     const status = root.querySelector("#dict_status");
+    const addTermBtn = root.querySelector("#dict_add_term");
 
-    function render() {
-      termsEl.value = (state.settings.custom_dictionary || []).join("\n");
-      const lines = [];
-      const aliases = state.settings.custom_aliases || {};
-      for (const [term, list] of Object.entries(aliases)) {
-        lines.push(`${term} = ${(list || []).join(", ")}`);
-      }
-      aliasesEl.value = lines.join("\n");
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
     }
 
-    function parseAliases(text) {
-      const out = {};
-      for (const line of text.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eq = trimmed.indexOf("=");
-        if (eq < 0) continue;
-        const term = trimmed.slice(0, eq).trim();
-        const vals = trimmed
-          .slice(eq + 1)
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (term && vals.length) out[term] = vals;
-      }
-      return out;
-    }
-
-    root.querySelector("#save_dict").addEventListener("click", async () => {
+    async function persist() {
       status.textContent = "Saving…";
       try {
-        const custom_dictionary = termsEl.value
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const custom_aliases = parseAliases(aliasesEl.value);
         const patch = {
           output_language: state.settings.output_language,
           input_language: state.settings.input_language,
@@ -66,8 +23,8 @@ window.VoxDictionary = {
           llm_model: state.settings.llm_model,
           auto_paste: state.settings.auto_paste,
           hotkey: state.settings.hotkey,
-          custom_dictionary,
-          custom_aliases,
+          custom_dictionary: state.settings.custom_dictionary || [],
+          custom_aliases: state.settings.custom_aliases || {},
           profiles: state.settings.profiles,
           system_message_override: state.settings.system_message_override ?? null,
         };
@@ -75,11 +32,82 @@ window.VoxDictionary = {
           method: "POST",
           body: JSON.stringify(patch),
         });
-        render();
         status.textContent = "Saved";
+        render();
       } catch (e) {
         status.textContent = `Error: ${e.message}`;
       }
+    }
+
+    function render() {
+      const terms = state.settings.custom_dictionary || [];
+      const aliases = state.settings.custom_aliases || {};
+      if (!terms.length) {
+        table.innerHTML = `<p class="muted">No terms yet. Add one below.</p>`;
+        return;
+      }
+      table.innerHTML = terms
+        .map((term) => {
+          const chips = (aliases[term] || [])
+            .map(
+              (a) =>
+                `<span class="chip">${escapeHtml(a)} <button type="button" data-remove-alias="${escapeHtml(term)}::${escapeHtml(a)}">&times;</button></span>`
+            )
+            .join("");
+          return `<div class="dict-row" data-term="${escapeHtml(term)}">
+            <div class="chip">${escapeHtml(term)} <button type="button" data-remove-term="${escapeHtml(term)}">&times;</button></div>
+            <div class="dict-arrow">&rarr;</div>
+            <div class="dict-aliases">${chips}<button type="button" class="link" data-add-alias="${escapeHtml(term)}">+ alias</button></div>
+          </div>`;
+        })
+        .join("");
+
+      table.querySelectorAll("[data-remove-term]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const term = btn.dataset.removeTerm;
+          state.settings.custom_dictionary = terms.filter((t) => t !== term);
+          const nextAliases = { ...aliases };
+          delete nextAliases[term];
+          state.settings.custom_aliases = nextAliases;
+          persist();
+        });
+      });
+
+      table.querySelectorAll("[data-remove-alias]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const [term, alias] = btn.dataset.removeAlias.split("::");
+          const next = (aliases[term] || []).filter((a) => a !== alias);
+          const nextAliases = { ...aliases };
+          if (next.length) {
+            nextAliases[term] = next;
+          } else {
+            delete nextAliases[term];
+          }
+          state.settings.custom_aliases = nextAliases;
+          persist();
+        });
+      });
+
+      table.querySelectorAll("[data-add-alias]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const term = btn.dataset.addAlias;
+          const alias = prompt(`New alias for "${term}" (how it's heard):`);
+          if (!alias || !alias.trim()) return;
+          const nextAliases = { ...aliases };
+          nextAliases[term] = [...(nextAliases[term] || []), alias.trim()];
+          state.settings.custom_aliases = nextAliases;
+          persist();
+        });
+      });
+    }
+
+    addTermBtn.addEventListener("click", () => {
+      const term = prompt("New dictionary term (the correct spelling):");
+      if (!term || !term.trim()) return;
+      const terms = state.settings.custom_dictionary || [];
+      if (terms.includes(term.trim())) return;
+      state.settings.custom_dictionary = [...terms, term.trim()];
+      persist();
     });
 
     render();

@@ -9,20 +9,26 @@
       --bg: #f6f7f9;
       --card: #ffffff;
       --text: #1a1d23;
-      --muted: #5c6570;
-      --accent: #0b6e4f;
-      --border: #dde1e6;
+      --muted: #6b7280;
+      --accent: #3b6fe0;
+      --accent-text: #ffffff;
+      --border: #e2e5ea;
       --danger: #b42318;
+      --chip-bg: #eef1f6;
+      --input-bg: #f6f7f9;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #12151a;
-        --card: #1b1f27;
-        --text: #e8eaed;
-        --muted: #9aa3ad;
-        --accent: #3dba8c;
-        --border: #2c333d;
+        --bg: #0b0c10;
+        --card: #14161c;
+        --text: #eceef1;
+        --muted: #8a92a0;
+        --accent: #4f7cff;
+        --accent-text: #ffffff;
+        --border: #262932;
         --danger: #f97066;
+        --chip-bg: #1d212b;
+        --input-bg: #1a1d24;
       }
     }
     * { box-sizing: border-box; }
@@ -34,159 +40,310 @@
       line-height: 1.45;
     }
     header {
-      padding: 1.25rem 1.5rem 0.5rem;
-      max-width: 860px;
+      max-width: 900px;
       margin: 0 auto;
-    }
-    header h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
-    header p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.95rem; }
-    nav.tabs {
+      padding: 1.75rem 1.5rem 0.5rem;
       display: flex;
-      gap: 0.5rem;
-      max-width: 860px;
-      margin: 1rem auto 0;
-      padding: 0 1.5rem;
-      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
     }
-    nav.tabs button {
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--text);
-      padding: 0.4rem 0.85rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    nav.tabs button.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
+    header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
+    header p { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.95rem; }
     main {
-      max-width: 860px;
+      max-width: 900px;
       margin: 0 auto;
       padding: 1rem 1.5rem 3rem;
     }
-    .page { display: none; }
-    .page.active { display: block; }
-    .card {
+    .section {
       background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1rem 1.15rem;
-      margin-bottom: 1rem;
+      border-radius: 14px;
+      padding: 1.35rem 1.5rem;
+      margin-bottom: 1.1rem;
     }
-    .card h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
-    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+    .section-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 0.9rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .section-label .actions { margin: 0; }
+    .field-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      padding: 0.75rem 0;
+    }
+    .field-row + .field-row { border-top: 1px solid var(--border); }
+    .field-info { min-width: 0; }
+    .field-title { font-weight: 600; font-size: 0.95rem; }
+    .field-desc { color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+    .field-control { flex: 0 0 auto; min-width: 220px; text-align: right; }
+    .field-control select,
+    .field-control input[type=text] { text-align: left; }
+    .field-hint { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; text-align: right; }
     input[type=text], input[type=number], select, textarea {
       width: 100%;
       padding: 0.5rem 0.65rem;
-      border-radius: 6px;
+      border-radius: 8px;
       border: 1px solid var(--border);
-      background: var(--bg);
+      background: var(--input-bg);
       color: var(--text);
       font: inherit;
     }
-    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; resize: vertical; }
     .row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
     .row > * { flex: 1; min-width: 180px; }
     .actions { display: flex; gap: 0.6rem; margin-top: 1rem; align-items: center; }
     button.primary {
       background: var(--accent);
-      color: #fff;
+      color: var(--accent-text);
       border: none;
-      border-radius: 6px;
-      padding: 0.55rem 1rem;
+      border-radius: 8px;
+      padding: 0.55rem 1.15rem;
       cursor: pointer;
       font: inherit;
+      font-weight: 600;
     }
     button.ghost {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--text);
-      border-radius: 6px;
-      padding: 0.55rem 1rem;
+      border-radius: 8px;
+      padding: 0.5rem 0.9rem;
       cursor: pointer;
       font: inherit;
     }
+    button.link {
+      background: none;
+      border: none;
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.85rem;
+      padding: 0;
+    }
     button.danger { color: var(--danger); border-color: var(--danger); }
     .status { color: var(--muted); font-size: 0.9rem; }
-    .check { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
     table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
     th, td { text-align: left; padding: 0.45rem 0.35rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     .muted { color: var(--muted); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+
+    /* Toggle switch */
+    .switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .track {
+      position: absolute; inset: 0; background: var(--border); border-radius: 999px;
+      cursor: pointer; transition: background 0.15s ease;
+    }
+    .switch .track::before {
+      content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
+      background: #fff; border-radius: 50%; transition: transform 0.15s ease;
+    }
+    .switch input:checked + .track { background: var(--accent); }
+    .switch input:checked + .track::before { transform: translateX(18px); }
+
+    /* Chips */
+    .chip {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      background: var(--chip-bg); border: 1px solid var(--border); border-radius: 999px;
+      padding: 0.25rem 0.4rem 0.25rem 0.7rem; font-size: 0.85rem; margin: 0.2rem 0.3rem 0.2rem 0;
+    }
+    .chip button {
+      background: none; border: none; color: var(--muted); cursor: pointer; font: inherit;
+      width: 16px; height: 16px; line-height: 1; padding: 0; border-radius: 50%;
+    }
+    .chip button:hover { color: var(--danger); }
+
+    /* Dictionary table */
+    .dict-table { width: 100%; }
+    .dict-row {
+      display: grid; grid-template-columns: minmax(120px, 200px) auto 1fr; gap: 0.75rem;
+      align-items: flex-start; padding: 0.6rem 0; border-top: 1px solid var(--border);
+    }
+    .dict-row:first-child { border-top: none; }
+    .dict-arrow { color: var(--muted); padding-top: 0.35rem; }
+    .dict-aliases { display: flex; flex-wrap: wrap; align-items: center; }
+
+    /* Collapsible */
+    .collapsible-toggle {
+      background: none; border: none; color: var(--accent); cursor: pointer; font: inherit;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .collapsible-body { display: none; margin-top: 1rem; }
+    .collapsible-body.open { display: block; }
+
+    /* History */
+    .history-layout { display: grid; grid-template-columns: 260px 1fr; gap: 1.25rem; margin-top: 1rem; }
+    .history-list-pane { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+    .history-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .stat {
+      background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.45rem 0.6rem;
+    }
+    .stat-label { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+    .stat-value { font-size: 1rem; font-weight: 600; margin-top: 0.1rem; }
+    .history-bottleneck { font-size: 0.78rem; color: var(--muted); }
+    .history-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 520px; overflow-y: auto; }
+    .history-item {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.65rem;
+      cursor: pointer; background: var(--input-bg);
+    }
+    .history-item.active { border-color: var(--accent); background: var(--chip-bg); }
+    .history-item-meta { font-size: 0.72rem; color: var(--muted); }
+    .history-item-preview { font-size: 0.82rem; margin-top: 0.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-detail-pane { min-width: 0; }
+    .latency-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
+    .stage-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-top: 0.5rem; }
+    .stage-card { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.7rem; min-width: 0; }
+    .stage-text { margin-top: 0.4rem; font-size: 0.78rem; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
+    @media (max-width: 720px) {
+      .history-layout { grid-template-columns: 1fr; }
+      .latency-row, .stage-row { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Vox</h1>
-    <p>Local voice dictation settings — nothing leaves this machine.</p>
+    <div>
+      <h1>Vox Settings</h1>
+      <p>A clean, local voice workspace for multilingual dictation.</p>
+    </div>
+    <button class="primary" id="save_general">Save</button>
   </header>
-  <nav class="tabs" id="tabs">
-    <button data-page="general" class="active">General</button>
-    <button data-page="dictionary">Dictionary</button>
-    <button data-page="profiles">Profiles</button>
-    <button data-page="history">History</button>
-  </nav>
   <main>
-    <section class="page active" id="page-general">
-      <div class="card">
-        <h2>Language</h2>
-        <div class="row">
-          <div>
-            <label for="input_language">Input language</label>
-            <input id="input_language" type="text" placeholder="auto" />
-          </div>
-          <div>
-            <label for="output_language">Output language</label>
-            <input id="output_language" type="text" placeholder="auto" />
-          </div>
+    <section class="section" id="section-language">
+      <div class="section-label">Language</div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Spoken language</div>
+          <div class="field-desc">Language you dictate in. Auto-detect works for most cases.</div>
+        </div>
+        <div class="field-control">
+          <input id="input_language" type="text" placeholder="auto" />
         </div>
       </div>
-      <div class="card">
-        <h2>Models</h2>
-        <label for="whisper_model">Whisper model</label>
-        <select id="whisper_model"></select>
-        <label for="llm_model">Ollama LLM</label>
-        <select id="llm_model"></select>
-      </div>
-      <div class="card">
-        <h2>Behavior</h2>
-        <div class="check">
-          <input id="auto_paste" type="checkbox" />
-          <label for="auto_paste" style="margin:0">Auto-paste at cursor (Cmd+V)</label>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Output language</div>
+          <div class="field-desc">Final writing language.</div>
         </div>
-        <label for="system_override">System message override (optional — replaces generated prompt)</label>
-        <textarea id="system_override" placeholder="Leave blank to use the generated prompt"></textarea>
-        <label>Live system prompt preview</label>
-        <textarea id="system_preview" readonly></textarea>
-      </div>
-      <div class="card">
-        <h2>Hotkey</h2>
-        <div class="check">
-          <input id="hotkey_enabled" type="checkbox" />
-          <label for="hotkey_enabled" style="margin:0">Enabled</label>
+        <div class="field-control">
+          <input id="output_language" type="text" placeholder="auto" />
         </div>
-        <div class="row">
-          <div>
-            <label for="hotkey_modifiers">Modifiers (comma-separated)</label>
-            <input id="hotkey_modifiers" type="text" placeholder="control,alt" />
-          </div>
-          <div>
-            <label for="hotkey_key">Key</label>
-            <input id="hotkey_key" type="text" placeholder="Space" />
-          </div>
-        </div>
-      </div>
-      <div class="actions">
-        <button class="primary" id="save_general">Save</button>
-        <span class="status" id="general_status"></span>
       </div>
     </section>
 
-    <section class="page" id="page-dictionary"></section>
-    <section class="page" id="page-profiles"></section>
-    <section class="page" id="page-history"></section>
+    <section class="section" id="section-models">
+      <div class="section-label">Models</div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Transcription</div>
+          <div class="field-desc">Speech-to-text model.</div>
+        </div>
+        <div class="field-control">
+          <select id="whisper_model"></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Translation &amp; cleanup</div>
+          <div class="field-desc">Local rewrite model.</div>
+        </div>
+        <div class="field-control">
+          <select id="llm_model"></select>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="section-behavior">
+      <div class="section-label">Behavior</div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Auto-paste at cursor</div>
+          <div class="field-desc">Insert text automatically when allowed.</div>
+        </div>
+        <div class="field-control" style="text-align:right">
+          <label class="switch">
+            <input id="auto_paste" type="checkbox" />
+            <span class="track"></span>
+          </label>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Push-to-talk hotkey</div>
+          <div class="field-desc">Hold to record, release to paste.</div>
+        </div>
+        <div class="field-control">
+          <div class="row">
+            <input id="hotkey_modifiers" type="text" placeholder="control,alt" />
+            <input id="hotkey_key" type="text" placeholder="Space" />
+          </div>
+          <div class="field-hint">
+            <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.82rem;color:var(--muted)">
+              <input id="hotkey_enabled" type="checkbox" style="width:auto" /> Enabled
+            </label>
+            &nbsp;·&nbsp;Comma-separated modifiers.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="section-dictionary">
+      <div class="section-label">Custom Dictionary</div>
+      <div class="field-title" style="margin-bottom:0.15rem">Vocabulary</div>
+      <div class="field-desc" style="margin-bottom:0.75rem">Type this &rarr; when heard as these.</div>
+      <div id="dict_table" class="dict-table"></div>
+      <div class="actions">
+        <button class="link" id="dict_add_term">+ Add term</button>
+        <span class="status" id="dict_status"></span>
+      </div>
+    </section>
+
+    <section class="section" id="section-system-message">
+      <div class="section-label">
+        <span>System Message</span>
+        <span class="actions">
+          <button class="ghost" id="sysmsg_refresh">Refresh</button>
+          <button class="ghost" id="sysmsg_reset">Reset</button>
+          <button class="ghost" id="sysmsg_copy">Copy</button>
+        </span>
+      </div>
+      <div class="field-desc" id="sysmsg_meta" style="margin-bottom:0.6rem"></div>
+      <div class="field-desc" style="margin-bottom:0.4rem">Advanced prompt override. Usually leave this generated.</div>
+      <textarea id="system_override" placeholder="Leave blank to use the generated prompt"></textarea>
+      <label class="muted" style="font-size:0.78rem;margin-top:0.6rem;display:block">Live preview</label>
+      <textarea id="system_preview" readonly></textarea>
+    </section>
+
+    <section class="section" id="section-profiles">
+      <div class="section-label">App Profiles</div>
+      <div class="field-title" style="margin-bottom:0.15rem">Formatting and privacy by app</div>
+      <div class="field-desc" style="margin-bottom:0.75rem">Default applies when no app-specific profile matches.</div>
+      <div id="profiles_table"></div>
+      <div class="row" style="margin-top:0.75rem">
+        <input id="new_profile_bundle" type="text" placeholder="com.example.App" />
+        <button class="ghost" id="add_profile" style="flex:0 0 auto">Add profile</button>
+      </div>
+      <span class="status" id="profiles_status"></span>
+    </section>
+
+    <section class="section" id="section-history">
+      <div class="section-label">
+        <span>Diagnostics &amp; History</span>
+        <button class="collapsible-toggle" id="history_toggle">Show</button>
+      </div>
+      <div class="collapsible-body" id="history_body"></div>
+    </section>
   </main>
   <script src="/app.js"></script>
   <script src="/dictionary.js"></script>
