@@ -37,6 +37,15 @@ objc2-foundation = "0.3.2"
 # Whisper still runs on Linux, just on CPU instead of Metal.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = "0.14"
+# libei/ashpd (portal-authorized input injection) alongside the default
+# x11rb backend: enigo tries libei first and falls back to x11rb per event,
+# so this is additive, not a replacement. Needed because plain XTest (what
+# x11rb alone uses) does not reliably deliver synthetic input to native
+# Wayland windows on at least KDE Plasma - confirmed empirically, not
+# theoretical - while libei goes through the properly authorized
+# xdg-desktop-portal RemoteDesktop session a real input-injecting app is
+# supposed to use, one-time interactive consent and all.
+enigo = { version = "0.6.1", features = ["libei_tokio"] }
 
 [dev-dependencies]
 tempfile = "3"

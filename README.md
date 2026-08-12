@@ -168,21 +168,26 @@ section reflects real testing on Fedora 42 with KDE Plasma on Wayland, not assum
   plain X11 session Vox falls back to `xdotool` directly. Neither present means every
   dictation uses the `default` profile rather than failing - `vox doctor` tells you which
   path you're on.
-- **Auto-paste is the rough edge.** Synthesizing Ctrl+V (via `enigo`, using XTest through
-  XWayland) reports success from Vox's side but did not reliably deliver keystrokes into a
-  real Wayland-native window in testing on this setup - not a Vox-specific problem: plain
-  `xdotool type` and even `ydotool`'s kernel-level `uinput` injection (which is supposed to
-  be indistinguishable from real hardware input) had the same result once verified against
-  an actual application window, most likely because this compositor gates synthetic input
-  through a portal-authorized path that neither method satisfies. What does work every time,
-  confirmed in testing: **the cleaned-up text always lands on your clipboard**, the same
-  safety net macOS falls back to when Accessibility isn't granted. Practically, expect to
-  press Ctrl+V yourself after each dictation until proper `xdg-desktop-portal` RemoteDesktop
-  support is added (tracked as a real gap, not a "should be fine" assumption) - on some other
-  compositor or an X11 session, automatic paste may well work fully; `vox doctor` can't
-  detect this particular failure mode itself since the synthesis call genuinely doesn't
-  error, so treat "Vox: inserted at cursor" as optimistic on Wayland until you've confirmed
-  it yourself once.
+- **Auto-paste is the rough edge, and here's exactly why.** Plain XTest-based synthesis
+  (`enigo`'s default backend, used through XWayland) reports success from Vox's side but did
+  not reliably deliver keystrokes into a real Wayland-native window in testing - not
+  Vox-specific: raw `xdotool type` and even `ydotool`'s kernel-level `uinput` injection
+  (indistinguishable from real hardware input at the driver level) had the same result once
+  verified against an actual window. So Vox now also tries `enigo`'s `libei_tokio` backend,
+  which goes through the correct, sanctioned mechanism for this - an authorized
+  `xdg-desktop-portal` RemoteDesktop session, the same one-time-consent model macOS's
+  Accessibility permission uses. On this test machine that path hits what looks like a KDE
+  portal bug (`xdp-kde-remotedesktop` fails its own internal permission-store lookup before
+  ever showing the consent dialog, confirmed via `journalctl`), so it doesn't fully close the
+  gap here - but the fix is real, is the officially-supported mechanism, and may well work on
+  other Plasma versions or a fresh permission store. Either way, this path is now
+  timeout-bounded (3s) specifically because a broken or absent portal must never turn into an
+  indefinite hang for the whole pipeline - it always falls through to the clipboard. What
+  works every time, confirmed in testing: **the cleaned-up text always lands on your
+  clipboard**, the same safety net macOS falls back to when Accessibility isn't granted.
+  `vox doctor` can't detect this specific failure mode since the synthesis call doesn't error
+  from Vox's point of view, so treat "Vox: inserted at cursor" as optimistic on Wayland until
+  you've confirmed it yourself once.
 - **Global hotkey and tray icon** use the `global-hotkey` and `tray-icon` crates. Registration
   succeeds without error on this setup, and per-app detection working confirms the tray
   process itself runs correctly; the actual hold-to-talk key press wasn't verified end-to-end

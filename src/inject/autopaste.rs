@@ -103,10 +103,41 @@ fn activate_target_app(ctx: &AppContext) {
 }
 
 fn synthesize_paste() -> Result<()> {
-    if try_enigo_paste().is_ok() {
+    if try_enigo_paste_bounded().is_ok() {
         return Ok(());
     }
     cg_event_paste()
+}
+
+// enigo's Linux backend tries a portal-authorized libei session before
+// falling back to plain X11/XTest. That portal negotiation is a blocking
+// D-Bus round trip enigo makes no promise about the duration of: on a
+// working setup it's near-instant once authorized, but on a compositor
+// with no working RemoteDesktop portal backend (confirmed in testing: a
+// broken permission-store lookup that never resolves, and this isn't
+// KDE-specific - most non-GNOME/KDE Wayland compositors don't implement
+// this portal interface for input at all) it can hang far longer than any
+// single dictation should ever wait. Bound it so a broken or absent portal
+// always falls through to the next strategy quickly instead of stalling
+// the whole pipeline.
+#[cfg(target_os = "macos")]
+fn try_enigo_paste_bounded() -> Result<()> {
+    try_enigo_paste()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn try_enigo_paste_bounded() -> Result<()> {
+    const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(3);
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(try_enigo_paste());
+    });
+    match rx.recv_timeout(SYNTHESIS_TIMEOUT) {
+        Ok(result) => result,
+        Err(_) => Err(VoxError::Injection(
+            "keystroke synthesis timed out (no working input portal for this session)".into(),
+        )),
+    }
 }
 
 fn try_enigo_paste() -> Result<()> {
