@@ -10,6 +10,11 @@ jobs:
   macos:
     name: build, test, clippy (macos-15)
     runs-on: macos-15
+    env:
+      # ggml's native ARM build fails with current Xcode (vmmlaq_s32 needs
+      # i8mm, which -mcpu=native doesn't enable), and a native build on a
+      # newer M-series runner wouldn't run on older Macs anyway.
+      CMAKE_PROJECT_INCLUDE_BEFORE: ${{ github.workspace }}/cmake/portable-cpu.cmake
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +59,11 @@ jobs:
   linux:
     name: build, test (ubuntu-latest)
     runs-on: ubuntu-latest
+    env:
+      # Use whisper-rs-sys's pre-generated bindings: bindgen with the
+      # libclang on newer distros (Ubuntu 26) emits a broken _IO_FILE that
+      # fails its own layout assertion. Also drops the libclang build dep.
+      WHISPER_DONT_GENERATE_BINDINGS: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -65,18 +75,16 @@ jobs:
       - name: Cache cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # cmake/gcc and libclang (bindgen) for whisper-rs, alsa for cpal,
-      # libxdo for enigo, gtk3/appindicator for tray-icon, dbus for tao,
-      # openssl for reqwest. Listed explicitly rather than relying on what
-      # the runner image happens to preinstall. kdotool/xdotool are
-      # runtime-only (shelled out to for active-window detection), not
-      # build deps.
+      # cmake/gcc for whisper-rs, alsa for cpal, libxdo for enigo,
+      # gtk3/appindicator for tray-icon, dbus for tao, openssl for reqwest.
+      # Listed explicitly rather than relying on what the runner image
+      # happens to preinstall. kdotool/xdotool are runtime-only (shelled out
+      # to for active-window detection), not build deps.
       - name: Install native dev headers
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential pkg-config \
-            libclang-dev \
             libasound2-dev \
             libxdo-dev \
             libgtk-3-dev \

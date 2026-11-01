@@ -72,6 +72,8 @@ else
 fi
 
 cd "${SRC}"
+# ggml's -mcpu=native build fails with current Xcode (see the cmake file).
+export CMAKE_PROJECT_INCLUDE_BEFORE="${SRC}/cmake/portable-cpu.cmake"
 run cargo build --release --locked
 
 mkdir -p "${HOME}/.local/bin"

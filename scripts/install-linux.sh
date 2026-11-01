@@ -53,15 +53,15 @@ pkg_manager() {
 }
 
 # Build deps (alsa/cpal, libxdo/enigo, gtk3+appindicator/tray-icon, dbus/tao,
-# openssl/reqwest, cmake+cc+libclang for whisper-rs) plus kdotool/xdotool for
-# per-app profile detection.
+# openssl/reqwest, cmake+cc for whisper-rs) plus kdotool/xdotool for per-app
+# profile detection.
 install_build_deps() {
   local pm
   pm="$(pkg_manager)"
   case "${pm}" in
     dnf)
       run sudo dnf install -y \
-        cmake gcc gcc-c++ clang-devel pkgconf-pkg-config \
+        cmake gcc gcc-c++ pkgconf-pkg-config \
         alsa-lib-devel libxdo-devel gtk3-devel \
         libayatana-appindicator-gtk3-devel \
         dbus-devel openssl-devel \
@@ -70,7 +70,7 @@ install_build_deps() {
     apt)
       run sudo apt-get update
       run sudo apt-get install -y \
-        cmake build-essential libclang-dev pkg-config \
+        cmake build-essential pkg-config \
         libasound2-dev libxdo-dev libgtk-3-dev \
         libayatana-appindicator3-dev \
         libdbus-1-dev libssl-dev \
@@ -80,7 +80,7 @@ install_build_deps() {
       ;;
     pacman)
       run sudo pacman -S --needed \
-        cmake gcc clang pkgconf \
+        cmake gcc pkgconf \
         alsa-lib libxdo gtk3 libayatana-appindicator \
         dbus openssl \
         xdotool
@@ -88,7 +88,7 @@ install_build_deps() {
       ;;
     *)
       echo "no supported package manager found (looked for dnf, apt, pacman)" >&2
-      echo "install manually: cmake, a C compiler, libclang, alsa-lib-devel, libxdo-devel," >&2
+      echo "install manually: cmake, a C compiler, alsa-lib-devel, libxdo-devel," >&2
       echo "gtk3-devel, libayatana-appindicator-gtk3-devel, dbus-devel, openssl-devel," >&2
       echo "and xdotool/kdotool" >&2
       exit 1
@@ -130,6 +130,9 @@ else
 fi
 
 cd "${SRC}"
+# whisper-rs-sys ships pre-generated bindings; generating them with bindgen
+# breaks on newer distros' libclang (a malformed _IO_FILE) and needs libclang.
+export WHISPER_DONT_GENERATE_BINDINGS=1
 run cargo build --release --locked
 
 mkdir -p "${HOME}/.local/bin"

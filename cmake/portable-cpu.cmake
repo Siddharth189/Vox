@@ -9,7 +9,11 @@
 #
 # which runs before ggml's option() calls. With GGML_NATIVE pre-set to OFF,
 # ggml enables its portable x86-64 baseline instead: AVX, AVX2, FMA, F16C
-# (every x86 CPU since ~2013-2015). Apple Silicon/ARM builds are unaffected.
+# (every x86 CPU since ~2013-2015). On Apple Silicon it builds for the
+# compiler's default (M1) baseline, which is also required to build at all
+# with current Xcode: ggml's -mcpu=native path uses i8mm intrinsics without
+# enabling that target feature. Metal does the heavy lifting there anyway.
 #
-# Local builds for your own machine don't need this: native is fastest.
+# Local x86/Linux builds for your own machine don't need this: native is
+# fastest.
 set(GGML_NATIVE OFF CACHE BOOL "Vox portable release build" FORCE)
