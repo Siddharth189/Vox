@@ -22,6 +22,7 @@ use crate::hotkey::{self as hk, PttAction, PushToTalk};
 use crate::model::{elapsed_ms, InjectionResult, Mode, Privacy};
 use crate::permissions;
 use crate::pipeline::{build_live_pipeline, Pipeline, PreparedReport};
+use crate::stats;
 
 enum UserEvent {
     Hotkey(GlobalHotKeyEvent),
@@ -59,6 +60,10 @@ fn pipeline_settings_changed(old: &Settings, new: &Settings) -> bool {
         || old.custom_aliases != new.custom_aliases
         || old.system_message_override != new.system_message_override
         || old.profiles != new.profiles
+        || old.llm_provider != new.llm_provider
+        || old.llm_base_url != new.llm_base_url
+        || old.voice_commands != new.voice_commands
+        || old.snippets != new.snippets
 }
 
 struct InstanceLock {
@@ -510,6 +515,9 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                 };
                 if let Err(e) = history::append_record(record) {
                     tracing::warn!("history append failed: {e}");
+                }
+                if let Err(e) = stats::record_dictation(&report.processed_text, report.audio_ms) {
+                    tracing::warn!("stats update failed: {e}");
                 }
 
                 tracing::info!(

@@ -7,10 +7,10 @@ use crate::error::Result;
 use crate::inject::{AutoPasteInjector, ClipboardInjector, TextInjector};
 use crate::model::{
     elapsed_ms, AppContext, AudioChunk, EnrichedRequest, InjectionResult, LatencyMetrics, Mode,
-    ProcessedText,
+    ProcessedText, Transcript,
 };
 use crate::privacy::PrivacyPolicy;
-use crate::process::{CleanupProcessor, TextProcessor};
+use crate::process::{join_segments, CleanupProcessor, Segment, TextProcessor, VoiceCommands};
 use crate::stt::{self, LocalWhisper, Transcriber};
 
 /// The real pipeline: platform app detection, local Whisper, LLM-or-local
@@ -33,7 +33,11 @@ pub fn build_live_pipeline(settings: &Settings, model_path: &Path) -> Result<Pip
         Box::new(transcriber),
         Box::new(processor),
         injector,
-    ))
+    )
+    .with_commands(VoiceCommands::new(
+        settings.voice_commands,
+        &settings.snippets,
+    )))
 }
 
 pub struct Pipeline {
@@ -42,6 +46,8 @@ pub struct Pipeline {
     pub processor: Box<dyn TextProcessor>,
     pub injector: Box<dyn TextInjector>,
     pub privacy: PrivacyPolicy,
+    /// "new line" / "scratch that" and snippet expansion.
+    pub commands: VoiceCommands,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +58,8 @@ pub struct PreparedReport {
     pub model_text: Option<String>,
     pub processed_text: String,
     pub latency: LatencyMetrics,
+    /// Length of the recording, for usage stats.
+    pub audio_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +82,13 @@ impl Pipeline {
             processor,
             injector,
             privacy: PrivacyPolicy,
+            commands: VoiceCommands::new(true, &[]),
         }
+    }
+
+    pub fn with_commands(mut self, commands: VoiceCommands) -> Self {
+        self.commands = commands;
+        self
     }
 
     pub fn run(&self, audio: &AudioChunk, mode: Mode) -> Result<PipelineReport> {
@@ -114,6 +128,7 @@ impl Pipeline {
         let transcript = self.transcriber.transcribe(audio, &ctx)?;
         let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
         let raw_text = transcript.text.clone();
+        let audio_ms = (audio.duration_secs() * 1000.0).round() as u64;
 
         if stt::is_non_speech(&raw_text) {
             return Ok(PreparedReport {
@@ -123,19 +138,12 @@ impl Pipeline {
                 model_text: None,
                 processed_text: String::new(),
                 latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0),
+                audio_ms,
             });
         }
 
         let process_start = Instant::now();
-        let req = EnrichedRequest {
-            transcript,
-            ctx: ctx.clone(),
-            mode,
-        };
-        let processed = match self.processor.process(&req) {
-            Ok(p) => p,
-            Err(_) => ProcessedText::new(raw_text.clone()),
-        };
+        let processed = self.process_segments(&transcript, &ctx, mode);
         let process_ms = elapsed_ms(process_start.elapsed());
 
         Ok(PreparedReport {
@@ -145,7 +153,61 @@ impl Pipeline {
             model_text: processed.model_text.clone(),
             processed_text: processed.text,
             latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms),
+            audio_ms,
         })
+    }
+
+    /// Cleans up the spoken parts of the transcript and splices in what the
+    /// voice commands and snippets insert verbatim. A processor failure
+    /// falls back to the raw words rather than losing the dictation.
+    fn process_segments(
+        &self,
+        transcript: &Transcript,
+        ctx: &AppContext,
+        mode: Mode,
+    ) -> ProcessedText {
+        let process = |text: &str| {
+            let req = EnrichedRequest {
+                transcript: Transcript {
+                    text: text.to_string(),
+                    language: transcript.language.clone(),
+                },
+                ctx: ctx.clone(),
+                mode,
+            };
+            self.processor
+                .process(&req)
+                .unwrap_or_else(|_| ProcessedText::new(text))
+        };
+
+        let segments = self.commands.split(&transcript.text, ctx.profile.format);
+        if let [Segment::Speech(only)] = segments.as_slice() {
+            return process(only);
+        }
+
+        let mut pieces = Vec::with_capacity(segments.len());
+        let mut model_pieces = Vec::new();
+        for segment in &segments {
+            match segment {
+                Segment::Speech(text) => {
+                    let p = process(text);
+                    if let Some(m) = p.model_text {
+                        model_pieces.push((false, m));
+                    }
+                    pieces.push((false, p.text));
+                }
+                Segment::Literal(text) => {
+                    model_pieces.push((true, text.clone()));
+                    pieces.push((true, text.clone()));
+                }
+            }
+        }
+        let text = join_segments(&pieces);
+        if model_pieces.iter().any(|(literal, _)| !literal) {
+            ProcessedText::with_model_text(text, join_segments(&model_pieces))
+        } else {
+            ProcessedText::new(text)
+        }
     }
 
     pub fn inject_processed_text(
@@ -231,6 +293,36 @@ mod tests {
         let report = pipeline.run(&audio(), Mode::Auto).unwrap();
         assert!(report.prepared.processed_text.is_empty());
         assert_eq!(report.injection.strategy, "skipped");
+    }
+
+    #[test]
+    fn commands_and_snippets_survive_cleanup() {
+        use crate::config::Snippet;
+        use crate::process::LocalCleanup;
+        use std::collections::HashMap;
+
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new(
+                "hi sam, new paragraph. um, lets meet tuesday. scratch that. \
+                 lets meet wednesday, book at my link.",
+            )),
+            Box::new(LocalCleanup::new(Vec::new(), HashMap::new())),
+            Box::new(FakeTextInjector::new()),
+        )
+        .with_commands(VoiceCommands::new(
+            true,
+            &[Snippet {
+                trigger: "my link".into(),
+                text: "https://cal.example/sam".into(),
+            }],
+        ));
+        let report = pipeline.run(&audio(), Mode::Auto).unwrap();
+        assert_eq!(
+            report.prepared.processed_text,
+            "Hi sam,\n\nLets meet wednesday, book at https://cal.example/sam."
+        );
+        assert_eq!(report.prepared.audio_ms, 100);
     }
 
     #[test]

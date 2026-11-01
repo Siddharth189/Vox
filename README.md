@@ -1,101 +1,49 @@
+<div align="center">
+
 # Vox
+
+**Private voice dictation for macOS, Windows, and Linux. Press a key, speak, and polished text lands at your cursor. Nothing leaves your machine.**
 
 [![CI](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml/badge.svg)](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)
+![Rust](https://img.shields.io/badge/rust-1.89%2B-orange)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-A local-first tray dictation app for **macOS, Windows, and Linux**. Press `Ctrl+.`, speak,
-press it again (or just hold it while you talk). Whisper transcribes on-device, the text is
-cleaned up for whatever app you're in, and the result lands at your cursor. Speaking runs at
-~150-200 wpm; typing at 40-90. Nothing leaves your machine.
+[Install](#install) · [Features](#features) · [Usage](#usage) · [Local LLMs](#optional-polish-with-a-local-llm) · [FAQ](#faq) · [Contributing](#contributing)
 
-The install is small: two ~6 MB executables plus a 57 MB speech model, downloaded on first
-run. A local LLM (Ollama) is an optional upgrade, not a requirement.
+</div>
 
-Vox started as a macOS app. Linux support's rough edges are platform-dependent (which desktop
-environment and display server you run) rather than code-dependent. See
-[Linux support](#linux-support) and [Windows notes](#windows-notes) below.
+---
 
-## Features
+Vox is an open-source, offline alternative to cloud dictation apps. It lives in your tray. Press
+`Ctrl+.` in any text field (email, Slack, your editor, a terminal), talk, and press it again.
+[Whisper](https://github.com/ggerganov/whisper.cpp) transcribes on your device, Vox cleans the
+text up for the app you're in, and pastes it at your cursor.
 
-- **One hotkey, two ways to use it.** Default `Ctrl+.` on every OS. *Tap* it to start
-  listening hands-free and tap again to finish, or *hold* it while you talk and release to
-  finish. `Esc` cancels. Strict hold-to-talk and press-to-toggle modes are also available.
-  Rebind it by pressing a new shortcut in the settings UI.
-- **Fully local pipeline.** Speech-to-text runs on-device via Whisper (Metal-accelerated on
-  macOS, CPU on Windows and Linux). No cloud calls, no API keys, no telemetry.
-- **Instant cleanup, LLM optional.** Built-in cleanup (filler words, spacing, capitalization,
-  terminal/code-aware formatting, your dictionary) adds no latency and needs nothing extra.
-  When Ollama is running with the configured model, Vox uses it for deeper rewriting and
-  translation, and falls back to the built-in cleanup the moment Ollama isn't there.
-- **Knows when it's listening.** A short chirp on start and stop (toggle in settings), and the
-  tray icon turns red while listening and amber while transcribing.
-- **First run just works.** The tray downloads the speech model with progress in its menu.
-  Launch at login is one click in the tray menu.
-- **Per-app profiles.** Choose a writing style (clean prose, casual, professional email,
-  code-editor-safe, shell command, Markdown) and a privacy level for each application, keyed
-  by bundle ID on macOS, executable name on Windows (`Code`, `slack`, `WindowsTerminal`), or
-  WM_CLASS on Linux, matched case-insensitively. Ships with defaults for Slack, VS Code,
-  terminals (Terminal, Windows Terminal, PowerShell, cmd, Alacritty, Konsole), and password
-  managers. On Linux, this needs a way to ask the desktop which window is focused; see
-  [Linux support](#linux-support).
-- **Per-app privacy switch.** Mark any app as disabled (1Password, Bitwarden, KeePass, and
-  KeePassXC are disabled by default) and Vox won't even open the microphone while that app
-  is focused.
-- **Dictation-aware LLM cleanup.** Fixes grammar, punctuation, and filler words, expands
-  spoken forms ("pr six eight four" becomes "PR #684"), and rewrites requests instead of
-  fulfilling them, so saying "write two lines summarizing the outage" produces two lines of
-  prose, not an assistant's reply.
-- **Multilingual and code-switched speech.** Auto-detects the spoken language by default, or
-  pin an input/output language explicitly. Includes purpose-built handling for Hinglish and
-  other Hindi/English code-switched speech. Recognized languages: English, Hindi, Tamil,
-  Spanish, Japanese, French, German, Portuguese, Chinese, Arabic, Korean, Italian, Russian.
-- **Custom dictionary with automatic aliases.** Teach Vox proper nouns, product names, and
-  jargon. Multi-word or hyphenated terms (for example `CI/CD`) get sensible alias variants
-  automatically, so misheard spellings get normalized back to your canonical form.
-- **Learns from your corrections.** Edit a past dictation in the history view, and Vox aligns
-  the edit against your dictionary to learn a new spelling alias automatically.
-- **Auto-paste that respects your clipboard.** Synthesizes Cmd+V (macOS) or Ctrl+V
-  (Windows, Linux) once the hotkey's modifier keys are released, then puts your previous
-  clipboard (text or image) back. On Windows, dictations are kept out of Win+V clipboard
-  history. macOS falls back to `osascript`, and in the worst case the cleaned text stays on
-  your clipboard so you never lose a dictation to a missing permission.
-- **Custom system prompt override.** Replace the generated system prompt entirely with your
-  own, previewed live before you save.
-- **Local settings web UI** at `http://127.0.0.1:8722`: language, models, hotkey, per-app
-  profiles, custom dictionary and aliases, and a dictation history view with a per-stage
-  latency breakdown (privacy check, transcribe, LLM cleanup, inject) for every dictation.
-- **`vox doctor`** checks the whole stack in one command: microphone, hotkey, Whisper model
-  present and valid, Ollama (optional), and Accessibility permission on macOS.
-- **Tray only.** No Dock icon or taskbar window.
-- **Locked-down local storage.** Settings and history are written atomically, `0600`/`0700` on
-  macOS/Linux and under the per-user `%LOCALAPPDATA%` on Windows. The settings server only
-  answers its own page: Host and Origin are checked, which blocks DNS-rebinding reads of your
-  history.
+You speak at 150 wpm; most people type at 40. On a 4-core laptop with no GPU, a short sentence
+reaches the cursor **under a second** after you stop talking.
 
-## Requirements
+- **Private by design.** On-device speech recognition. No account, no API key, no telemetry.
+- **Small.** Two ~6 MB executables and a 57 MB speech model, downloaded on first run.
+- **Works without an LLM.** Built-in cleanup is instant. A local LLM is an optional upgrade.
+- **Cross-platform.** One Rust codebase for macOS (Metal-accelerated), Windows, and Linux.
 
-**Windows**: Windows 10 or 11 (x64). Nothing else to run a release. To build from source:
-[Rust](https://rustup.rs), Visual Studio 2022 Build Tools (C++ workload), CMake, and LLVM
-(`winget install Kitware.CMake LLVM.LLVM`).
+## Why Vox
 
-**macOS**: macOS 13 or later (Apple Silicon tested), Xcode Command Line Tools, `cmake`, a
-stable Rust toolchain.
+| | Vox | Typical cloud dictation |
+|---|---|---|
+| Where your voice goes | Stays on your computer | Uploaded to a server |
+| Works offline | Yes | No |
+| Price | Free, MIT-licensed | Subscription |
+| Account required | No | Yes |
+| Platforms | macOS, Windows, Linux | Often macOS/Windows only |
+| Bring your own LLM | Ollama, LM Studio, llama.cpp, any OpenAI-compatible local server | Vendor's model |
+| Inspect and change it | All source here | Closed |
 
-**Linux**: a Rust toolchain, `cmake`, a C compiler, and the native dev headers for audio
-(`alsa-lib-devel` / `libasound2-dev`), keystroke synthesis (`libxdo-devel` / `libxdo-dev`),
-and the tray icon (`gtk3-devel` + `libayatana-appindicator-gtk3-devel`, or the `apt`
-equivalents). `scripts/install-linux.sh` installs all of these for you on Fedora, Debian/
-Ubuntu, or Arch.
+## Install
 
-**Optional, any OS**: [Ollama](https://ollama.com) with a model pulled (`ollama pull
-llama3.2`) for LLM rewriting and translation. The Whisper model is downloaded by Vox itself
-(`vox download-model`, or automatically by the tray on first run).
-
-## Installation
-
-### Windows
-
-From a checkout (builds, then installs for the current user, no admin needed):
+### Windows 10/11
 
 ```powershell
 git clone https://github.com/Siddharth189/Vox.git
@@ -103,59 +51,61 @@ cd Vox
 powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
 
-From a release zip (`Vox-windows-x86_64.zip`, built by CI): unzip, then run
+This builds Vox, installs it for your user (no admin needed), adds a **Vox** Start-menu entry,
+downloads the speech model, turns on launch at login, and starts the tray. Prefer a prebuilt
+binary? Every CI run on `main` produces `Vox-windows-x86_64.zip`: unzip it and run
 `install-windows.ps1 -BinDir .` from that folder.
 
-The installer copies `vox.exe` (CLI) and `vox-tray.exe` (the windowless tray) to
-`%LOCALAPPDATA%\Programs\Vox`, adds it to your PATH, creates a **Vox** Start-menu shortcut,
-downloads the speech model, turns on launch at login, and starts the tray. Re-run it to
-upgrade; settings and history are kept. `-Model small-q5_1`, `-NoAutostart`, and `-DryRun`
-are available. `scripts\uninstall-windows.ps1 [-RemoveData]` removes it.
-
-### macOS
+### macOS 13+
 
 ```bash
-git clone git@github.com:Siddharth189/Vox.git
+git clone https://github.com/Siddharth189/Vox.git
 cd Vox
 ./scripts/install.sh
 ```
 
-`install.sh` builds Vox, installs the CLI to `~/.local/bin/vox`, packages `Vox.app` into
-`~/Applications` (not `/Applications`), downloads the Whisper model, and starts the tray. Set
-`VOX_WITH_LLM=1` to also install Ollama and pull the configured model, and
-`VOX_WHISPER_MODEL=small-q5_1` for a larger speech model. It's idempotent and safe to re-run
-after a `git pull`: it only writes a fresh `settings.yaml` if one doesn't already exist, so
-your saved settings and dictionary survive a reinstall.
+Installs `Vox.app` to `~/Applications` and the `vox` CLI to `~/.local/bin`, downloads the model,
+and starts the tray. Grant **Accessibility** access when asked: that's what lets Vox paste for you.
 
-To preview every step without touching your system, set `VOX_INSTALL_DRY_RUN=1`. To let the
-installer fetch the source itself instead of cloning manually, set `VOX_REPO_URL`.
-
-Manual installation:
+### Linux (Fedora, Debian/Ubuntu, Arch)
 
 ```bash
-cargo build --release --locked
-./target/release/vox download-model
-./scripts/package_app.sh
-cp -R dist/Vox.app ~/Applications/
-open ~/Applications/Vox.app
-```
-
-### Linux
-
-```bash
-git clone git@github.com:Siddharth189/Vox.git
+git clone https://github.com/Siddharth189/Vox.git
 cd Vox
 ./scripts/install-linux.sh
 ```
 
-`install-linux.sh` installs the native build dependencies for your package manager (dnf/apt/
-pacman), builds Vox, installs the CLI to `~/.local/bin/vox`, downloads the Whisper model,
-and writes a `~/.config/systemd/user/vox.service` unit (not enabled by default - see
-[Linux support](#linux-support) for why; the tray's "Launch at login" uses XDG autostart
-instead). `VOX_WITH_LLM=1` adds Ollama. Data lives under `~/.local/share/vox`, following the
-XDG Base Directory spec. `VOX_INSTALL_DRY_RUN=1` and `VOX_REPO_URL` work the same as on macOS.
+Installs the build dependencies for your distro, builds Vox, and downloads the model. Desktop
+support varies by compositor; read [Linux notes](docs/PLATFORMS.md#linux) before filing a bug.
 
-Manual installation:
+### After installing
+
+```bash
+vox doctor
+```
+
+`vox doctor` checks the microphone, hotkey, speech model, optional LLM server, and permissions,
+and prints the exact fix for anything that's missing.
+
+<details>
+<summary>Installer options, building from source, and uninstalling</summary>
+
+| | Windows (`install-windows.ps1`) | macOS / Linux (`install.sh`, `install-linux.sh`) |
+|---|---|---|
+| Bigger speech model | `-Model small-q5_1` | `VOX_WHISPER_MODEL=small-q5_1` |
+| Also install Ollama + model | - | `VOX_WITH_LLM=1` |
+| Preview without changing anything | `-DryRun` | `VOX_INSTALL_DRY_RUN=1` |
+| Skip launch at login | `-NoAutostart` | (Linux: off by default) |
+| Uninstall | `scripts\uninstall-windows.ps1 [-RemoveData]` | delete the app/binary and the data dir below |
+
+Re-running an installer upgrades in place and keeps your settings, dictionary, and history.
+
+**Build from source.** You need [Rust](https://rustup.rs) 1.89+, CMake, and a C/C++ compiler:
+
+- **Windows:** Visual Studio 2022 Build Tools (C++ workload), plus `winget install Kitware.CMake LLVM.LLVM`.
+- **macOS:** Xcode Command Line Tools and `brew install cmake`.
+- **Linux:** `cmake`, a C compiler, and the dev headers for ALSA, libxdo, GTK 3, and
+  libayatana-appindicator (`install-linux.sh` installs them).
 
 ```bash
 cargo build --release --locked
@@ -163,202 +113,281 @@ cargo build --release --locked
 ./target/release/vox tray
 ```
 
+</details>
+
+## Features
+
+### Dictation that fits where you're typing
+
+- **One hotkey, two styles.** *Tap* `Ctrl+.` to start hands-free and tap again to finish, or
+  *hold* it while you talk. `Esc` cancels. Rebind it in settings by pressing the new shortcut.
+- **Per-app profiles.** Clean prose by default, casual in Slack, code-safe in your editor, no
+  capital letter or trailing period in terminals. Vox recognizes the focused app (bundle ID on
+  macOS, executable name on Windows, WM_CLASS on Linux) and ships sensible defaults.
+- **Voice commands.** Say *"new line"*, *"new paragraph"*, or *"scratch that"* as its own
+  phrase. Vox doesn't act on them when they're part of a sentence ("add a new line to the
+  file"), and never inserts line breaks into a terminal.
+- **Snippets.** Say *"my calendar link"* or *"my signature"* and Vox types the stored text exactly
+  as written, line breaks and all.
+- **Multilingual.** Auto-detects the language, or pin input and output languages. Includes
+  handling for Hinglish and other code-switched speech, and translation when a local LLM is on.
+
+### Accurate on your words
+
+- **Custom dictionary.** Teach Vox product names, people, and jargon. Misheard spellings map
+  back to your canonical form, and multi-word terms get alias variants automatically.
+- **Learns from corrections.** Fix a past dictation in the history view, and Vox learns the
+  misspelling as an alias.
+- **Smart cleanup without an LLM.** Removes "um" and "uh" without touching real words, fixes
+  spacing and capitalization, and respects the app's format. Adds no noticeable delay.
+- **Optional LLM polish.** With a local model running, Vox fixes grammar, expands spoken forms
+  ("pr six eight four" becomes "PR #684"), and rewrites what you said rather than answering it.
+
+### Respectful of your machine
+
+- **Your clipboard survives.** Vox pastes, then restores what you had copied (text or image). On
+  Windows, dictations stay out of Win+V history and cloud clipboard.
+- **Privacy switch per app.** Vox won't even open the microphone while a password manager
+  (1Password, Bitwarden, KeePass, KeePassXC) is focused. Add any app you like.
+- **Never loses a dictation.** If pasting is blocked, the text stays on your clipboard.
+- **Locked-down storage.** Settings and history are private to your user. The settings page only
+  answers itself (Host and Origin checks block DNS-rebinding attacks).
+
+### See what it's doing
+
+- **Usage stats.** Words dictated, typing time saved, speaking pace, and your daily streak, in
+  the settings page and via `vox stats`. Only counts are stored, never text.
+- **History with timings.** Each recent dictation shows the raw transcript, LLM output, final
+  text, and how long each stage took.
+- **Clear status.** The tray icon turns red while listening and amber while transcribing, with
+  optional start and stop sounds.
+
 ## Usage
 
-Click into any text field, press `Ctrl+.`, speak, and press `Ctrl+.` again (or hold it while
-speaking and let go). The cleaned-up text is pasted at your cursor. `Esc` cancels.
+Click into any text field, press **`Ctrl+.`**, speak, and press **`Ctrl+.`** again (or hold it
+while you speak and let go). Press `Esc` to cancel.
 
-```
-vox tray                  run the tray app (Windows: vox-tray.exe / Start menu "Vox")
-vox setup                 download the speech model and run the readiness check
-vox doctor [--json]       readiness report: mic, hotkey, model, Ollama, permissions
-vox download-model [NAME] fetch a Whisper model (--list for choices) and select it
-vox transcribe FILE.wav   transcribe a recording (benchmarking / support)
-vox listen [--secs 5]     record from the mic once and clean up the result
-vox demo [--dry-run] "text"   run text through the cleanup pipeline
-vox inject-test "text"    exercise the auto-paste path directly
-vox autostart on|off      launch the tray at login
-vox check                 quick Ollama reachability check
-```
+Open **Settings** from the tray menu, or go to <http://127.0.0.1:8722>.
 
-Open the settings UI from the tray menu (or `http://127.0.0.1:8722`) to configure languages,
-models, the hotkey, per-app profiles, and your custom dictionary.
+### Voice commands
+
+| Say | You get |
+|---|---|
+| "…thanks. **New paragraph.** See you…" | a blank line between paragraphs |
+| "…item one. **New line.** Item two…" | a line break |
+| "Let's meet Tuesday. **Scratch that.** Let's meet Wednesday." | "Let's meet Wednesday." |
+| a snippet trigger, e.g. "**my email**" | the snippet's text, exactly as saved |
+
+Pause briefly before a command so Whisper punctuates it as its own phrase. Turn voice commands
+off under **Settings > Behavior**. Add snippets under **Settings > Snippets** or in
+`settings.yaml`.
+
+### Command line
+
+```text
+vox tray                      run the tray app (Windows: vox-tray.exe or Start menu "Vox")
+vox setup                     download the speech model and run the readiness check
+vox doctor [--json]           readiness report: mic, hotkey, model, LLM server, permissions
+vox stats [--json|--reset]    words dictated, time saved, speaking pace, streak
+vox download-model [NAME]     fetch a Whisper model (--list for choices) and select it
+vox devices                   list microphones (* = selected)
+vox listen [--secs 5]         record once from the mic and print the cleaned result
+vox transcribe FILE.wav       transcribe a recording (benchmarks, bug reports)
+vox demo [--dry-run] "text"   run text through cleanup, voice commands, and snippets
+vox inject-test "text"        test auto-paste on its own
+vox autostart on|off|status   launch the tray at login
+vox check                     send one test request to the configured LLM server
+```
 
 ### Speech models
 
-| Model | Size | Notes |
+| Model | Size | Best for |
 |---|---|---|
-| `base-q5_1` (default) | 57 MB | multilingual, fast on any CPU |
-| `base.en-q5_1` | 57 MB | English only, slightly more accurate for English |
-| `small-q5_1` | 181 MB | multilingual, more accurate, ~3x slower |
-| `large-v3-turbo-q5_0` | 547 MB | most accurate; best with a GPU (macOS) |
+| `base-q5_1` (default) | 57 MB | any CPU; multilingual; fast |
+| `base.en-q5_1` | 57 MB | English only, slightly more accurate |
+| `small-q5_1` | 181 MB | better accuracy, about 3x slower |
+| `large-v3-turbo-q5_0` | 547 MB | best accuracy; use a GPU (macOS) |
 
-`vox download-model small-q5_1` downloads and switches; the tray picks it up without a
-restart.
+`vox download-model small-q5_1` downloads a model and switches to it. The tray picks it up
+without a restart.
 
-## Windows notes
+## Optional: polish with a local LLM
 
-Tested on Windows 11 (i7-1185G7, 4 cores, no GPU) with the default `base-q5_1` model,
-dictating into a real text box with the real hotkey and microphone:
+Vox works fully without an LLM. When one is running on your machine, Vox uses it for deeper
+rewriting and translation, and falls back to built-in cleanup the moment it's unavailable. No
+dictation waits on a server that isn't there.
 
-| What | Result |
+| Server | Setup | Vox settings |
+|---|---|---|
+| [Ollama](https://ollama.com) (default) | `ollama pull llama3.2` | nothing to change |
+| [LM Studio](https://lmstudio.ai) | load a model, then start the server (Developer tab) | provider `openai_compatible` |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `llama-server -m model.gguf --port 8080` | provider `openai_compatible`, URL `http://127.0.0.1:8080` |
+| Jan, vLLM, LocalAI, … | any OpenAI-compatible `/v1/chat/completions` | provider `openai_compatible` + its URL |
+
+Choose the server under **Settings > Models**, or in `settings.yaml`:
+
+```yaml
+llm_cleanup: true
+llm_provider: openai_compatible       # or: ollama
+llm_base_url: http://127.0.0.1:1234   # optional; defaults to the provider's usual local port
+llm_model: llama-3.2-3b-instruct
+```
+
+Keeping your dictations on your machine is the point of Vox, so it only talks to servers on
+`localhost`. To use a server elsewhere on your network, set `VOX_ALLOW_REMOTE_LLM=1`. If the
+server needs a key, put it in `VOX_LLM_API_KEY` (it's never written to disk).
+
+On a machine with less than 12 GB of RAM, use a 1B-class model (`llama3.2:1b`). `vox doctor`
+warns when your model is too big for your memory.
+
+## Configuration
+
+Everything in the settings page is stored in one human-readable file:
+
+| OS | Data directory |
 |---|---|
-| Stop -> text at cursor, 3-5 s utterance | 0.7-1.1 s |
-| Stop -> text at cursor, 18 s paragraph | ~2.9 s |
-| Accuracy on those clips | word-perfect |
-| Idle CPU / memory | ~0.02% / ~260 MB |
+| macOS | `~/Library/Application Support/vox/` |
+| Windows | `%LOCALAPPDATA%\Vox\` |
+| Linux | `$XDG_DATA_HOME/vox` (usually `~/.local/share/vox`) |
 
-- **Per-app profiles** key off the executable name (`Code`, `slack`, `WindowsTerminal`,
-  `powershell`). Terminals get the shell profile: no forced capital, no trailing period.
-- **Apps running as administrator** can't receive synthesized keystrokes from a normal
-  process (Windows UIPI). The text is still on the clipboard; press Ctrl+V. Run Vox elevated
-  only if you dictate into elevated apps a lot.
-- **`Ctrl+.` is global** while Vox runs, so it takes over VS Code's "Quick Fix" binding.
-  Pick another shortcut in Settings if you rely on that.
-- Dictations are excluded from Win+V clipboard history and cloud clipboard, and your
-  previous clipboard is restored after each paste.
-- Logs: `%LOCALAPPDATA%\Vox\tray.log`.
+It holds `settings.yaml`, `history.json` (last 100 dictations), `stats.json` (counts only),
+`models/`, and `tray.log`. The tray reloads `settings.yaml` when it changes.
 
-## Linux support
+```yaml
+hotkey: { enabled: true, modifiers: [control], key: Period, mode: hybrid }  # hybrid | hold | toggle
+input_language: auto
+output_language: auto
+voice_commands: true
+snippets:
+  - trigger: my email
+    text: sam@example.com
+  - trigger: my signature
+    text: |-
+      Thanks,
+      Sam
+custom_dictionary: [Kubernetes, PostgreSQL]
+custom_aliases:
+  Kubernetes: [coopernetes]
+profiles:
+  default: { format: clean_prose, privacy: local_only }
+  Code: { format: code_context, privacy: local_only }
+  1Password: { format: clean_prose, privacy: disabled }
+```
 
-The pipeline itself, audio capture, Whisper transcription, Ollama cleanup, the settings web
-UI, and history, is identical on Linux, Windows, and macOS. What differs is the handful of things that
-touch the desktop directly, and how well those work depends entirely on your session. This
-section reflects real testing on Fedora 42 with KDE Plasma on Wayland, not assumptions.
+Formats: `clean_prose`, `casual`, `professional_email`, `code_context`, `shell`, `markdown`.
 
-- **Speech-to-text** runs on CPU via `whisper-rs` (no Metal-equivalent GPU backend is wired
-  up) and works well: the `small` model (487MB resident) transcribed synthesized speech
-  accurately in testing. On lower-RAM machines, `./scripts/download_model.sh tiny` or `base`
-  trade accuracy for a smaller footprint.
-- **The event loop had a real bug that made everything look broken.** `tao`'s
-  `ControlFlow::WaitUntil` does not reliably re-arm on at least one real setup (KDE Plasma
-  Wayland): it fired a handful of times at startup and then silently stopped, which meant
-  the hotkey grab succeeded and events genuinely arrived in the channel, but nothing was
-  left polling for them - holding the hotkey did nothing, and the "Settings..." menu item
-  (which separately used the macOS-only `open` command with no Linux fallback) did nothing
-  either. Fixed by parking the loop fully idle (`ControlFlow::Wait`, ~0% CPU) and waking it
-  on a fixed cadence from a dedicated thread via `EventLoopProxy::send_event` - the same
-  mechanism worker threads already use to deliver pipeline results back to the UI, so it
-  doesn't depend on the platform re-arming a timer correctly. An earlier `Poll`-based
-  workaround "fixed" the symptom but cost 30-50% constant CPU, which starved the actual
-  transcription and LLM steps of CPU and made a real dictation take 113 seconds end to end.
-- **Model size matters more than you'd expect on RAM-constrained machines, for both models.**
-  This was the single biggest performance issue found in testing: on an 8GB machine, the
-  default `llama3.2:latest` (3B, ~2GB) pushed the system into swap once the desktop
-  session's own memory use was added in, and a single dictation's cleanup step took 4+
-  minutes without completing, well past Vox's 60-second request timeout. Switching to
-  `llama3.2:1b` (1.3GB) brought that down to single-digit seconds. Whisper's `small` model
-  (487MB) was the other half of the same problem - about 50 seconds to transcribe a 7-second
-  clip, competing with the LLM and the tray itself for the same limited cores; `base`
-  (141MB) cut that to a few seconds with no noticeable accuracy loss on clear speech. The
-  1B LLM tradeoff is real: it occasionally drops the subject of a sentence, invents small
-  details, or (fixed in testing) prefaces its answer with unstripped meta-commentary like
-  "I'll provide the corrected text:" that the 3B model didn't produce in the same tests.
-  `vox doctor` checks your total RAM against the configured LLM's size and warns if they're
-  a bad match. If you have 12GB+ RAM, the default 3B model plus the `small` Whisper model
-  are worth keeping for the better quality; below that, `install-linux.sh` picks the faster
-  pairing (`llama3.2:1b` + `base`) automatically.
-- **Per-app profile detection is confirmed working** via `kdotool` on KDE Plasma, X11 or
-  Wayland alike - verified against real windows in testing, including correctly identifying
-  a Konsole window by its `org.kde.konsole` WM_CLASS. This is notable because the naive
-  approach (`xdotool`/`xprop` against `_NET_ACTIVE_WINDOW`) does not work on Plasma Wayland:
-  it returns a KWin-internal focus-proxy window, not your actual app, silently. `kdotool`
-  goes through KWin's own scripting interface instead and doesn't have this problem. On a
-  plain X11 session Vox falls back to `xdotool` directly. Neither present means every
-  dictation uses the `default` profile rather than failing - `vox doctor` tells you which
-  path you're on.
-- **Auto-paste is the rough edge, and here's exactly why.** Plain XTest-based synthesis
-  (`enigo`'s default backend, used through XWayland) reports success from Vox's side but did
-  not reliably deliver keystrokes into a real Wayland-native window in testing - not
-  Vox-specific: raw `xdotool type` and even `ydotool`'s kernel-level `uinput` injection
-  (indistinguishable from real hardware input at the driver level) had the same result once
-  verified against an actual window. So Vox now also tries `enigo`'s `libei_tokio` backend,
-  which goes through the correct, sanctioned mechanism for this - an authorized
-  `xdg-desktop-portal` RemoteDesktop session, the same one-time-consent model macOS's
-  Accessibility permission uses. On this test machine that path hits what looks like a KDE
-  portal bug (`xdp-kde-remotedesktop` fails its own internal permission-store lookup before
-  ever showing the consent dialog, confirmed via `journalctl`), so it doesn't fully close the
-  gap here - but the fix is real, is the officially-supported mechanism, and may well work on
-  other Plasma versions or a fresh permission store. Either way, this path is now
-  timeout-bounded (3s) specifically because a broken or absent portal must never turn into an
-  indefinite hang for the whole pipeline - it always falls through to the clipboard. What
-  works every time, confirmed in testing: **the cleaned-up text always lands on your
-  clipboard**, the same safety net macOS falls back to when Accessibility isn't granted.
-  `vox doctor` can't detect this specific failure mode since the synthesis call doesn't error
-  from Vox's point of view, so treat "Vox: inserted at cursor" as optimistic on Wayland until
-  you've confirmed it yourself once.
-- **Global hotkey and tray icon** use the `global-hotkey` and `tray-icon` crates. Registration
-  succeeds without error on this setup, and per-app detection working confirms the tray
-  process itself runs correctly; the actual hold-to-talk key press wasn't verified end-to-end
-  by automated testing (it requires physical keyboard input, same class of limitation as
-  auto-paste above) - run `vox tray` from a terminal and try it once to confirm.
-  `global-hotkey` grabs keys through X11, so on a **native Wayland session the hotkey only
-  fires while an XWayland window is focused**. The proper fix is the
-  `org.freedesktop.portal.GlobalShortcuts` portal (KDE 6, GNOME 48+), which isn't wired up
-  yet. Until then, bind a desktop shortcut to `vox` or use an X11 session.
+<details>
+<summary>Environment variables</summary>
 
-Run `vox doctor` after installing; it reports all of the above for your specific session,
-with an install command or fix suggestion for whatever's missing.
+| Variable | Effect |
+|---|---|
+| `VOX_DATA_DIR` | use a different data directory (portable installs, testing) |
+| `VOX_ALLOW_REMOTE_LLM=1` | allow an LLM server that isn't on this machine |
+| `VOX_LLM_API_KEY` | bearer token for an OpenAI-compatible server |
+| `VOX_MODEL` | override the LLM model for one run |
+| `VOX_WHISPER_THREADS` | Whisper CPU threads (default: physical cores) |
+| `VOX_WHISPER_TIMINGS=1` | print Whisper system info and timings to stderr |
+| `VOX_FULL_AUDIO_CTX=1` | disable the short-clip encoder speedup |
+| `RUST_LOG=vox=debug` | verbose logging |
+
+</details>
+
+## Platform support
+
+| | macOS | Windows | Linux X11 | Linux Wayland |
+|---|---|---|---|---|
+| Speech-to-text | ✅ Metal GPU | ✅ CPU | ✅ CPU | ✅ CPU |
+| Global hotkey | ✅ | ✅ | ✅ | ⚠️ only while an XWayland window is focused |
+| Per-app profiles | ✅ | ✅ | ✅ `xdotool` | ✅ KDE via `kdotool` |
+| Auto-paste | ✅ Accessibility permission | ✅ not into apps running as admin | ✅ | ⚠️ compositor-dependent; text always on clipboard |
+| Launch at login | ✅ | ✅ | ✅ | ✅ |
+
+Measured performance, known limits, and the reasons behind each ⚠️ are in
+[docs/PLATFORMS.md](docs/PLATFORMS.md).
 
 ## How it works
 
-Each dictation flows through six stages: audio capture, privacy check, speech-to-text,
-app context detection, LLM cleanup, and injection. Every stage is a trait with a real and a
-fake implementation, so the pipeline can be tested end to end without a microphone, an LLM,
-or macOS itself. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full breakdown.
-
-## Development
-
-CI builds, tests, and lints on `macos-14`, `ubuntu-latest`, and `windows-latest` on every
-push; the Windows job also uploads an installable `Vox-windows-x86_64.zip`. Check the badge
-above or the Actions tab for current status.
-
-```bash
-cargo test
-cargo build --release
-cargo clippy --all-targets --all-features
-./target/release/vox doctor
-./target/release/vox demo --dry-run "hey john review pr six eight four"
-./target/release/vox transcribe some-recording.wav --repeat 3   # STT latency/accuracy
+```text
+ hotkey ─► audio capture ─► privacy check ─► Whisper (on-device) ─► voice commands & snippets
+                                                                              │
+     paste at cursor ◄─ restore clipboard ◄─ dictionary ◄─ cleanup (local rules or local LLM)
 ```
 
-**Windows**: build with the MSVC toolchain (Visual Studio 2022 Build Tools with the C++
-workload, plus CMake and LLVM for whisper-rs's bindgen). The `x86_64-pc-windows-gnu`
-target doesn't work out of the box: whisper-rs-sys 0.13 passes MSVC-only flags and ggml
-names its archives without the `lib` prefix.
+Every stage is a Rust trait with a real and a fake implementation, so the whole pipeline is
+tested end to end without a microphone, a model, or a desktop. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Release builds you distribute** must not be tuned to the build machine: whisper.cpp
-defaults to `-march=native`, which crashes with "illegal instruction" on CPUs without the
-build machine's extensions (e.g. AVX-512). Set
-`CMAKE_PROJECT_INCLUDE_BEFORE=<repo>/cmake/portable-cpu.cmake` to build for the portable
-AVX2 baseline instead (CI does this). Builds for your own machine are fastest without it.
+## FAQ
 
-Useful environment variables: `VOX_DATA_DIR` (data dir override), `VOX_WHISPER_THREADS`,
-`VOX_WHISPER_TIMINGS=1` (whisper system info and timings to stderr), `VOX_FULL_AUDIO_CTX=1`
-(disable the short-clip encoder speedup), `RUST_LOG=vox=debug`.
+**Does any audio or text leave my computer?**
+No. Speech recognition runs on your machine. The optional LLM must be on `localhost` unless you
+explicitly set `VOX_ALLOW_REMOTE_LLM=1`. There is no telemetry or update check. The only network
+request Vox makes is to download a speech model when you ask for one.
 
-Root `Cargo.toml` gates Apple-only crates (`core-graphics`, `core-foundation`, `objc2*`) and
-Metal-accelerated Whisper behind `cfg(target_os = "macos")`, and `windows-sys` behind
-`cfg(windows)`; Linux and Windows get `whisper-rs` on its CPU backend. The handful of things
-with no cross-platform crate (app-context detection, modifier-key state, the exact paste
-keystroke, launch at login) are the only places with a per-OS `cfg` split in application
-code - see `src/context/` (`mac_detector.rs`, `windows_detector.rs`, `linux_detector.rs`)
-for the pattern to follow if you're adding another platform-specific piece.
+**Do I need a GPU?**
+No. The default model transcribes a short sentence in well under a second on a laptop CPU. On
+Apple Silicon, Whisper uses the GPU automatically.
+
+**Do I need Ollama or another LLM?**
+No. Built-in cleanup handles filler words, spacing, capitalization, your dictionary, voice
+commands, and snippets. An LLM adds grammar fixes, rewriting, and translation.
+
+**`Ctrl+.` conflicts with a shortcut I use.**
+Pick a new one under **Settings > Behavior > Dictation hotkey**: click it, then press your new
+combination.
+
+**Nothing was pasted.**
+Run `vox doctor`. The text is always on your clipboard, so `Ctrl+V` (or `Cmd+V`) works either
+way. Common causes: on macOS, the Accessibility permission is missing; on Windows, the target app
+is running as administrator; on Wayland, see [Linux notes](docs/PLATFORMS.md#linux).
+
+**It typed "Thank you." when I said nothing.**
+That's a known Whisper hallucination on silence. Vox filters silence before Whisper; if it still
+happens, please [open an issue](https://github.com/Siddharth189/Vox/issues/new/choose) with
+your `vox doctor --json` output.
+
+## Roadmap
+
+Planned work, in rough priority order. Each item is open for contributors: open an issue (or
+comment on the existing one) to agree on the approach before you start.
+
+- [ ] Wayland global shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal
+- [ ] Signed installers: `.msi` for Windows, notarized `.dmg` for macOS, AppImage/Flatpak for Linux
+- [ ] Live transcript preview while you speak
+- [ ] More speech backends (NVIDIA Parakeet, Moonshine) behind the existing `Transcriber` trait
+- [ ] "Edit selection" mode: select text, speak an instruction, and Vox rewrites the selection
+- [ ] Per-app snippets and per-app custom vocabulary
+- [ ] Settings import/export
+- [ ] Localized settings UI
+
+See [CHANGELOG.md](CHANGELOG.md) for what has shipped.
 
 ## Contributing
 
-Issues and pull requests are welcome. A few things to know before opening one:
+Contributions of all sizes are welcome: bug reports with `vox doctor --json` output, testing on
+a desktop environment we haven't covered, docs fixes, and code.
 
-- Keep changes scoped. New behavior should land as a new trait implementation where possible,
-  not a rewrite of `pipeline.rs`.
-- Run `cargo test` and `cargo clippy` before submitting; CI runs both on macOS, Linux, and
-  Windows.
-- If you're changing prompt text, few-shot examples, or dictionary normalization rules, add or
-  update a test in the same module. Those behaviors are easy to regress silently.
-- If you're improving Linux desktop support (a compositor-specific hotkey backend, another
-  window-manager's active-window query, ...), keep the macOS path untouched and branch with
-  `#[cfg(target_os = "macos")]` the way `src/context/linux_detector.rs` does.
+```bash
+git clone https://github.com/Siddharth189/Vox.git && cd Vox
+cargo test                                   # unit and pipeline tests; no mic or model needed
+cargo run -- demo --dry-run "hi sam, new paragraph. um, ship it friday"
+```
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md): it covers setup on each OS, where things live in
+the code, and how to add a platform backend, a cleanup rule, or a settings field. Issues labeled
+[`good first issue`](https://github.com/Siddharth189/Vox/labels/good%20first%20issue) are a good
+place to begin.
+
+Please follow our [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as
+described in [SECURITY.md](SECURITY.md).
+
+## Acknowledgements
+
+Vox is built on [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and
+[whisper-rs](https://github.com/tazz4843/whisper-rs), [cpal](https://github.com/RustAudio/cpal),
+[enigo](https://github.com/enigo-rs/enigo), [tray-icon](https://github.com/tauri-apps/tray-icon),
+[global-hotkey](https://github.com/tauri-apps/global-hotkey), and [axum](https://github.com/tokio-rs/axum).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Use it, fork it, ship it.

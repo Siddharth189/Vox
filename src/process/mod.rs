@@ -1,13 +1,17 @@
 mod cleanup;
+mod commands;
 mod dictionary;
 mod local;
 mod ollama;
 mod prompt;
 
 pub use cleanup::{Availability, CleanupProcessor};
+pub use commands::{join_segments, Segment, VoiceCommands};
 pub use dictionary::normalize_processed_text;
 pub use local::{clean_text, LocalCleanup};
-pub use ollama::{probe as probe_ollama, OllamaProcessor};
+pub use ollama::{
+    is_loopback_url, list_models, llm_url_permitted, probe as probe_llm, OllamaProcessor,
+};
 pub use prompt::{
     code_switch_fewshot, effective_system_prompt, fewshot, rewrite_only_user_message,
 };

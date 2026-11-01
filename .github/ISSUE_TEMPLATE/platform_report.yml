@@ -1,0 +1,33 @@
+name: Desktop compatibility report
+description: Tell us how Vox works on your OS, desktop environment, or compositor, even when everything works.
+labels: [platform]
+body:
+  - type: input
+    id: setup
+    attributes:
+      label: OS, desktop, and session
+      placeholder: "e.g. Ubuntu 24.04, GNOME 46, Wayland"
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works?
+      options:
+        - label: Tray icon appears
+        - label: Hotkey starts and stops dictation
+        - label: Text is pasted at the cursor
+        - label: Per-app profile is detected (check the History view in Settings)
+        - label: Launch at login
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `vox doctor --json`
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Apps where paste fails, workarounds you found, anything else.

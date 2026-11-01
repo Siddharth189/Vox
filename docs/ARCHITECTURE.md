@@ -1,9 +1,9 @@
 # Vox architecture
 
 Vox is a local-first tray dictation app for macOS, Windows, and Linux. Press the
-hotkey (default `Ctrl+.`) → speak → finish → Whisper transcribes → cleanup
-(local rules, or Ollama when running) → dictionary normalization → paste at the
-cursor.
+hotkey (default `Ctrl+.`) → speak → finish → Whisper transcribes → voice commands and snippets → cleanup
+(local rules, or a local LLM server when running) → dictionary normalization →
+paste at the cursor.
 
 ## Pipeline stages
 
@@ -29,19 +29,40 @@ cursor.
 
    Windows and Linux fall back to the `default` profile rather than failing.
    Profile lookup is case-insensitive.
-5. **Process** (`process/`) - `CleanupProcessor` uses Ollama when a cached,
+5. **Commands** (`process/commands.rs`) - splits the transcript into speech
+   and literals. "new line" / "new paragraph" become line breaks and
+   "scratch that" drops the previous sentence, but only when spoken as their
+   own clause (punctuation on both sides), so ordinary sentences are never
+   rewritten; line breaks are never inserted in `shell` profiles. Snippet
+   triggers match anywhere and expand verbatim. Only speech segments go
+   through cleanup, so the LLM can't rewrite a snippet. With no match, the
+   transcript passes through unchanged.
+6. **Process** (`process/`) - `CleanupProcessor` uses the LLM server when a cached,
    background-refreshed probe says it's up with the configured model
    (`cleanup.rs`), and the rule-based `LocalCleanup` otherwise (`local.rs`:
    filler removal, spacing, capitalization, shell/code-aware formatting,
    dictionary aliases). The probe never runs on the dictation's critical path:
    on Windows a connect to a closed localhost port takes ~2 s.
-6. **Inject** (`inject/`) - clipboard + synthesized paste via `enigo`, after
+7. **Inject** (`inject/`) - clipboard + synthesized paste via `enigo`, after
    waiting for the hotkey's modifiers to be physically released (otherwise
    Ctrl+Alt+V / AltGr+V gets sent). Cmd+V on macOS (with an `osascript`
    fallback), Ctrl+V with the layout-independent `VK_V` on Windows, Ctrl+V via
    XTest/libei on Linux. The previous clipboard (text or image) is restored
    afterwards unless something else replaced it; on Windows dictations are
    excluded from Win+V clipboard history and cloud sync.
+
+   The LLM server is Ollama (`/api/chat`) or any OpenAI-compatible server
+   (`/v1/chat/completions`: LM Studio, llama-server, Jan, vLLM), set by
+   `llm_provider` and `llm_base_url` (`process/ollama.rs`). Non-loopback URLs
+   are refused unless `VOX_ALLOW_REMOTE_LLM=1`, both in the probe and in the
+   request itself.
+
+## Usage stats
+
+`stats.rs` keeps lifetime totals in `stats.json`: dictations, words, speech
+time, and words per UTC day (last 400 days) for streaks. Counts only, never
+text. The tray adds to it after each paste; `/api/stats` and `vox stats`
+report words, minutes saved against a 40 wpm typist, speaking pace, and streak.
 
 ## Tray and hotkey
 
@@ -70,7 +91,7 @@ a console). Logs go to `tray.log`.
 | Linux   | `$XDG_DATA_HOME/vox` or `~/.local/share/vox` |
 
 `VOX_DATA_DIR` overrides the data dir on any OS. It holds `settings.yaml`,
-`history.json`, `models/`, `vox.lock`, and `tray.log`. Writes are atomic
+`history.json`, `stats.json`, `models/`, `vox.lock`, and `tray.log`. Writes are atomic
 (temp file + rename). On Unix they're `0600`/`0700`; on Windows,
 %LOCALAPPDATA%'s inherited ACL is already per-user.
 

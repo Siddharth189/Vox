@@ -1,0 +1,50 @@
+name: Bug report
+description: Something doesn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please don't paste dictations you wouldn't want public.
+        Security problems go through [private reporting](https://github.com/Siddharth189/Vox/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Windows, Linux (X11), Linux (Wayland)]
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: OS version and desktop environment
+      placeholder: "e.g. Windows 11 23H2 / macOS 14.5 / Fedora 42 KDE Plasma 6.3"
+  - type: input
+    id: app
+    attributes:
+      label: App you were dictating into
+      placeholder: "e.g. Slack, VS Code, Firefox, Windows Terminal"
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `vox doctor --json`
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant lines from tray.log
+      description: In your data directory (`%LOCALAPPDATA%\Vox`, `~/Library/Application Support/vox`, or `~/.local/share/vox`).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Vox version (`vox --version`) or commit

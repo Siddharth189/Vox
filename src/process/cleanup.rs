@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::Settings;
+use crate::config::{LlmProvider, Settings};
 use crate::error::Result;
 use crate::model::{EnrichedRequest, ProcessedText};
 use crate::process::local::LocalCleanup;
@@ -23,6 +23,7 @@ const PROBE_TTL: Duration = Duration::from_secs(20);
 /// retries SYNs for ~2 s, which would be added to every dictation for anyone
 /// who doesn't run Ollama.
 pub struct Availability {
+    provider: LlmProvider,
     host: String,
     model: String,
     state: Mutex<Option<(bool, Instant)>>,
@@ -30,8 +31,13 @@ pub struct Availability {
 }
 
 impl Availability {
-    pub fn new(host: impl Into<String>, model: impl Into<String>) -> Arc<Self> {
+    pub fn new(
+        provider: LlmProvider,
+        host: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            provider,
             host: host.into(),
             model: model.into(),
             state: Mutex::new(None),
@@ -46,7 +52,7 @@ impl Availability {
         }
         let me = Arc::clone(self);
         thread::spawn(move || {
-            let ok = probe(&me.host, &me.model);
+            let ok = probe(me.provider, &me.host, &me.model);
             me.set(ok);
             me.probing.store(false, Ordering::SeqCst);
         });
@@ -88,7 +94,8 @@ impl CleanupProcessor {
         );
         let llm = if settings.llm_cleanup {
             let processor = OllamaProcessor::from_settings(settings)?;
-            let availability = Availability::new(processor.host(), processor.model());
+            let availability =
+                Availability::new(processor.provider(), processor.host(), processor.model());
             availability.refresh();
             Some((processor, availability))
         } else {
@@ -97,10 +104,10 @@ impl CleanupProcessor {
         Ok(Self { llm, local })
     }
 
-    /// Synchronously re-checks Ollama (for one-shot CLI commands).
+    /// Synchronously re-checks the LLM server (for one-shot CLI commands).
     pub fn probe_now(&self) {
         if let Some((llm, availability)) = &self.llm {
-            availability.set(probe(llm.host(), llm.model()));
+            availability.set(probe(llm.provider(), llm.host(), llm.model()));
         }
     }
 
