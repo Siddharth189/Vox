@@ -256,7 +256,7 @@ pub fn run(settings: &Settings) -> DoctorReport {
             f.read_exact(&mut magic)?;
             Ok(magic)
         }) {
-            Ok(magic) if magic == [0x6c, 0x6d, 0x67, 0x67] => checks.push(Check {
+            Ok([0x6c, 0x6d, 0x67, 0x67]) => checks.push(Check {
                 name: "whisper_model".into(),
                 status: CheckStatus::Pass,
                 message: format!("valid ggml model at {}", model_path.display()),

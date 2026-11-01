@@ -13,7 +13,6 @@ use crate::process::prompt::{
 };
 use crate::process::TextProcessor;
 
-pub const DEFAULT_MODEL: &str = "llama3.2:latest";
 /// Optional bearer token for OpenAI-compatible servers that require one.
 /// Read from the environment so it never lands in settings.yaml.
 const API_KEY_ENV: &str = "VOX_LLM_API_KEY";
