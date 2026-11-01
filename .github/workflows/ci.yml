@@ -35,7 +35,18 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
 
       - name: cargo test
         run: cargo test --all-features
@@ -83,7 +94,18 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
 
       - name: cargo test
         run: cargo test --all-features
@@ -113,7 +135,18 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
 
       - name: cargo test
         run: cargo test --all-features
