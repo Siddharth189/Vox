@@ -52,46 +52,52 @@ pkg_manager() {
   fi
 }
 
-# Build deps (alsa/cpal, libxdo/enigo, gtk3+appindicator/tray-icon, cmake+cc
-# for whisper-rs) plus kdotool/xdotool for per-app profile detection.
+# Build deps (alsa/cpal, libxdo/enigo, gtk3+appindicator/tray-icon, dbus/tao,
+# openssl/reqwest, cmake+cc+libclang for whisper-rs) plus kdotool/xdotool for
+# per-app profile detection.
 install_build_deps() {
   local pm
   pm="$(pkg_manager)"
   case "${pm}" in
     dnf)
       run sudo dnf install -y \
-        cmake gcc gcc-c++ pkgconf-pkg-config \
+        cmake gcc gcc-c++ clang-devel pkgconf-pkg-config \
         alsa-lib-devel libxdo-devel gtk3-devel \
         libayatana-appindicator-gtk3-devel \
+        dbus-devel openssl-devel \
         kdotool xdotool
       ;;
     apt)
       run sudo apt-get update
       run sudo apt-get install -y \
-        cmake build-essential pkg-config \
+        cmake build-essential libclang-dev pkg-config \
         libasound2-dev libxdo-dev libgtk-3-dev \
         libayatana-appindicator3-dev \
+        libdbus-1-dev libssl-dev \
         xdotool
       echo "note: kdotool isn't packaged for apt-based distros yet;" >&2
       echo "      install it from https://github.com/jinliu/kdotool if you're on KDE Wayland" >&2
       ;;
     pacman)
       run sudo pacman -S --needed \
-        cmake gcc pkgconf \
+        cmake gcc clang pkgconf \
         alsa-lib libxdo gtk3 libayatana-appindicator \
+        dbus openssl \
         xdotool
       echo "note: kdotool may need an AUR helper (e.g. yay -S kdotool) on Arch" >&2
       ;;
     *)
       echo "no supported package manager found (looked for dnf, apt, pacman)" >&2
-      echo "install manually: cmake, a C compiler, alsa-lib-devel, libxdo-devel," >&2
-      echo "gtk3-devel, libayatana-appindicator-gtk3-devel, and xdotool/kdotool" >&2
+      echo "install manually: cmake, a C compiler, libclang, alsa-lib-devel, libxdo-devel," >&2
+      echo "gtk3-devel, libayatana-appindicator-gtk3-devel, dbus-devel, openssl-devel," >&2
+      echo "and xdotool/kdotool" >&2
       exit 1
       ;;
   esac
 }
 
-if ! command -v cmake >/dev/null 2>&1 || ! pkg-config --exists alsa 2>/dev/null; then
+if ! command -v cmake >/dev/null 2>&1 \
+  || ! pkg-config --exists alsa openssl dbus-1 2>/dev/null; then
   install_build_deps
 fi
 

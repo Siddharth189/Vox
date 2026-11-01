@@ -8,8 +8,8 @@ on:
 
 jobs:
   macos:
-    name: build, test, clippy (macos-14)
-    runs-on: macos-14
+    name: build, test, clippy (macos-15)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -54,18 +54,24 @@ jobs:
       - name: Cache cargo registry & build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # cmake/gcc for whisper-rs, alsa for cpal, libxdo for enigo,
-      # gtk3/appindicator for tray-icon. kdotool/xdotool are runtime-only
-      # (shelled out to for active-window detection), not build deps.
+      # cmake/gcc and libclang (bindgen) for whisper-rs, alsa for cpal,
+      # libxdo for enigo, gtk3/appindicator for tray-icon, dbus for tao,
+      # openssl for reqwest. Listed explicitly rather than relying on what
+      # the runner image happens to preinstall. kdotool/xdotool are
+      # runtime-only (shelled out to for active-window detection), not
+      # build deps.
       - name: Install native dev headers
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential pkg-config \
+            libclang-dev \
             libasound2-dev \
             libxdo-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libdbus-1-dev \
+            libssl-dev
 
       # Same informational-for-now stance as the macOS job.
       - name: cargo fmt --check
