@@ -187,8 +187,11 @@ mod tests {
     #[test]
     fn learns_position_aligned_alias() {
         let dir = tempfile::tempdir().unwrap();
-        // SAFETY: test-only, single-threaded test process
-        unsafe { std::env::set_var("HOME", dir.path()) };
+        // Keeps the test's settings.yaml out of the real data dir on every
+        // OS (HOME isn't consulted on Windows).
+        // SAFETY: test-only; no other test reads VOX_DATA_DIR concurrently
+        // in a way that matters (they only build in-memory defaults).
+        unsafe { std::env::set_var("VOX_DATA_DIR", dir.path()) };
 
         let mut settings = Settings::with_defaults();
         settings.custom_dictionary = vec!["Kubernetes".into()];

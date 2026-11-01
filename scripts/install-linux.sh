@@ -100,7 +100,10 @@ if ! command -v rustc >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v ollama >/dev/null 2>&1; then
+# Ollama (LLM rewriting) is optional: without it Vox uses its built-in
+# cleanup, and the install stays ~60MB instead of several GB.
+WITH_LLM="${VOX_WITH_LLM:-0}"
+if [[ "${WITH_LLM}" == "1" ]] && ! command -v ollama >/dev/null 2>&1; then
   echo "installing Ollama…"
   run bash -c "curl -fsSL https://ollama.com/install.sh | sh"
 fi
@@ -130,13 +133,15 @@ run chmod 755 "${HOME}/.local/bin/vox"
 # Stop any running tray before replacing it
 run bash -c "pkill -f '${HOME}/.local/bin/vox tray' 2>/dev/null || true"
 
-if [[ "${LOW_RAM}" == "1" ]]; then
-  echo "note: ${TOTAL_RAM_KB}KB total RAM detected; defaulting to the base Whisper model for a responsive experience (pass a size to download_model.sh yourself to override)"
-  run "${SRC}/scripts/download_model.sh" base
-else
-  run "${SRC}/scripts/download_model.sh" small
-fi
+# `vox download-model` also records the model in settings.yaml, so the
+# downloaded model and the configured one can never disagree. The quantized
+# base model is fast on any CPU; set VOX_WHISPER_MODEL=small-q5_1 for more
+# accuracy on machines with RAM to spare.
+WHISPER_MODEL="${VOX_WHISPER_MODEL:-base-q5_1}"
+run "${HOME}/.local/bin/vox" download-model "${WHISPER_MODEL}"
 
+MODEL="${VOX_MODEL:-llama3.2:latest}"
+if [[ "${WITH_LLM}" == "1" ]]; then
 # Start Ollama if needed
 if ! curl -sf --max-time 2 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
   if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files ollama.service >/dev/null 2>&1; then
@@ -170,6 +175,7 @@ fi
 MODEL="${VOX_MODEL}"
 PULL="${MODEL%:latest}"
 run ollama pull "${PULL}"
+fi
 
 DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/vox"
 run mkdir -p "${DATA_DIR}"
@@ -186,14 +192,15 @@ if [[ ! -f "${SETTINGS}" ]]; then
 auto_paste: true
 output_language: auto
 input_language: auto
-whisper_model: ${DATA_DIR}/models/ggml-small.bin
+whisper_model: ${DATA_DIR}/models/ggml-${WHISPER_MODEL}.bin
 llm_model: ${MODEL}
 custom_dictionary: []
 custom_aliases: {}
 hotkey:
   enabled: true
-  modifiers: [control, alt]
-  key: Space
+  modifiers: [control]
+  key: Period
+  mode: hybrid
 profiles:
   default:
     format: clean_prose

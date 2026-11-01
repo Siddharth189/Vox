@@ -1,4 +1,5 @@
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::Duration;
 
@@ -96,12 +97,19 @@ pub fn run(settings: &Settings) -> DoctorReport {
         message: "running on Linux".into(),
         fix: None,
     });
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    checks.push(Check {
+        name: "os".into(),
+        status: CheckStatus::Pass,
+        message: "running on Windows".into(),
+        fix: None,
+    });
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     checks.push(Check {
         name: "os".into(),
         status: CheckStatus::Fail,
-        message: "Vox supports macOS and Linux only".into(),
-        fix: Some("Build and run on macOS or Linux".into()),
+        message: "Vox supports macOS, Windows, and Linux".into(),
+        fix: Some("Build and run on macOS, Windows, or Linux".into()),
     });
 
     // 2. Architecture (informational everywhere except macOS, where Apple
@@ -131,73 +139,71 @@ pub fn run(settings: &Settings) -> DoctorReport {
         fix: None,
     });
 
-    // 3. ollama CLI
-    if which("ollama") {
+    // 3. Hotkey
+    if !settings.hotkey.enabled {
         checks.push(Check {
-            name: "ollama_cli".into(),
-            status: CheckStatus::Pass,
-            message: "ollama on PATH".into(),
-            fix: None,
+            name: "hotkey".into(),
+            status: CheckStatus::Warn,
+            message: "dictation hotkey is disabled".into(),
+            fix: Some("enable it in the settings UI".into()),
         });
     } else {
-        checks.push(Check {
-            name: "ollama_cli".into(),
-            status: CheckStatus::Warn,
-            message: "ollama not found on PATH".into(),
-            fix: Some(install_hint("ollama")),
-        });
+        match crate::hotkey::hotkey_from_config(&settings.hotkey) {
+            Ok(_) => checks.push(Check {
+                name: "hotkey".into(),
+                status: CheckStatus::Pass,
+                message: format!(
+                    "{} ({})",
+                    crate::hotkey::display_label(&settings.hotkey),
+                    match settings.hotkey.mode {
+                        crate::config::HotkeyMode::Hybrid => "tap to toggle, or hold to talk",
+                        crate::config::HotkeyMode::Hold => "hold to talk",
+                        crate::config::HotkeyMode::Toggle => "press to start/stop",
+                    }
+                ),
+                fix: None,
+            }),
+            Err(e) => checks.push(Check {
+                name: "hotkey".into(),
+                status: CheckStatus::Fail,
+                message: format!("invalid hotkey: {e}"),
+                fix: Some("pick a new one in the settings UI".into()),
+            }),
+        }
     }
 
-    // 4. cmake
-    if which("cmake") {
+    // 4. Microphone
+    checks.push(microphone_check(settings.input_device.as_deref()));
+
+    // 5. Build toolchain: only relevant when building from source, so it's
+    // informational rather than a warning for people running a release.
+    if !which("cmake") {
         checks.push(Check {
             name: "cmake".into(),
-            status: CheckStatus::Pass,
-            message: "cmake on PATH".into(),
-            fix: None,
-        });
-    } else {
-        checks.push(Check {
-            name: "cmake".into(),
-            status: CheckStatus::Warn,
-            message: "cmake not found (needed to build whisper-rs)".into(),
+            status: CheckStatus::Info,
+            message: "cmake not found (only needed to build Vox from source)".into(),
             fix: Some(install_hint("cmake")),
         });
     }
-
-    // 5. Native build toolchain: Xcode CLT on macOS, a C compiler on Linux
     #[cfg(target_os = "macos")]
     {
         let xcode = Command::new("xcode-select").arg("-p").output();
-        match xcode {
-            Ok(out) if out.status.success() => checks.push(Check {
+        if !matches!(xcode, Ok(out) if out.status.success()) {
+            checks.push(Check {
                 name: "toolchain".into(),
-                status: CheckStatus::Pass,
-                message: "Xcode Command Line Tools present".into(),
-                fix: None,
-            }),
-            _ => checks.push(Check {
-                name: "toolchain".into(),
-                status: CheckStatus::Warn,
-                message: "Xcode Command Line Tools not found".into(),
+                status: CheckStatus::Info,
+                message: "Xcode Command Line Tools not found (only needed to build from source)".into(),
                 fix: Some("xcode-select --install".into()),
-            }),
+            });
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if which("cc") || which("gcc") || which("clang") {
+        if !(which("cc") || which("gcc") || which("clang") || which("cl")) {
             checks.push(Check {
                 name: "toolchain".into(),
-                status: CheckStatus::Pass,
-                message: "C compiler present".into(),
-                fix: None,
-            });
-        } else {
-            checks.push(Check {
-                name: "toolchain".into(),
-                status: CheckStatus::Warn,
-                message: "no C compiler found (needed to build whisper-rs)".into(),
+                status: CheckStatus::Info,
+                message: "no C compiler found (only needed to build Vox from source)".into(),
                 fix: Some(install_hint("gcc")),
             });
         }
@@ -237,7 +243,7 @@ pub fn run(settings: &Settings) -> DoctorReport {
             name: "whisper_model".into(),
             status: CheckStatus::Fail,
             message: format!("model missing at {}", model_path.display()),
-            fix: Some("scripts/download_model.sh".into()),
+            fix: Some("vox download-model  (the tray also downloads it on first run)".into()),
         });
     } else {
         match std::fs::File::open(model_path).and_then(|mut f| {
@@ -256,7 +262,7 @@ pub fn run(settings: &Settings) -> DoctorReport {
                 name: "whisper_model".into(),
                 status: CheckStatus::Warn,
                 message: "model file exists but ggml magic mismatch".into(),
-                fix: Some("scripts/download_model.sh".into()),
+                fix: Some("vox download-model".into()),
             }),
             Err(e) => checks.push(Check {
                 name: "whisper_model".into(),
@@ -267,35 +273,44 @@ pub fn run(settings: &Settings) -> DoctorReport {
         }
     }
 
-    // 8. Ollama reachability + model
-    match check_ollama(&settings.llm_model) {
-        OllamaCheck::Ok { model_size_bytes } => {
-            checks.push(ollama_model_fit_check(&settings.llm_model, model_size_bytes));
-        }
-        OllamaCheck::Unreachable => checks.push(Check {
+    // 8. Optional LLM cleanup via Ollama. Never a failure: without it Vox
+    // uses its built-in rule-based cleanup.
+    if !settings.llm_cleanup {
+        checks.push(Check {
             name: "ollama".into(),
-            status: CheckStatus::Fail,
-            message: "ollama unreachable at http://127.0.0.1:11434".into(),
-            fix: Some(ollama_start_hint()),
-        }),
-        OllamaCheck::MissingModel => {
-            let pull = settings.llm_model.trim_end_matches(":latest");
-            checks.push(Check {
+            status: CheckStatus::Info,
+            message: "LLM cleanup off; using built-in cleanup".into(),
+            fix: None,
+        });
+    } else {
+        match check_ollama(&settings.llm_model) {
+            OllamaCheck::Ok { model_size_bytes } => {
+                checks.push(ollama_model_fit_check(&settings.llm_model, model_size_bytes));
+            }
+            OllamaCheck::Unreachable => checks.push(Check {
                 name: "ollama".into(),
-                status: CheckStatus::Fail,
-                message: format!("model {} not found in ollama tags", settings.llm_model),
-                fix: Some(format!("ollama pull {pull}")),
-            });
+                status: CheckStatus::Info,
+                message: "Ollama not running; using built-in cleanup (optional: install Ollama for LLM rewriting)".into(),
+                fix: Some(if which("ollama") {
+                    ollama_start_hint()
+                } else {
+                    install_hint("ollama")
+                }),
+            }),
+            OllamaCheck::MissingModel => {
+                let pull = settings.llm_model.trim_end_matches(":latest");
+                checks.push(Check {
+                    name: "ollama".into(),
+                    status: CheckStatus::Warn,
+                    message: format!(
+                        "Ollama is running but model {} isn't pulled; using built-in cleanup",
+                        settings.llm_model
+                    ),
+                    fix: Some(format!("ollama pull {pull}")),
+                });
+            }
         }
     }
-
-    // 9. Microphone
-    checks.push(Check {
-        name: "microphone".into(),
-        status: CheckStatus::Info,
-        message: "microphone permission is prompted on first recording".into(),
-        fix: None,
-    });
 
     // 10. Auto-paste permission: Accessibility (TCC) on macOS, no equivalent
     // gate on Linux beyond having a graphical session for enigo/XTest to use.
@@ -332,7 +347,18 @@ pub fn run(settings: &Settings) -> DoctorReport {
             });
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    checks.push(Check {
+        name: "input_session".into(),
+        status: CheckStatus::Pass,
+        message: if settings.auto_paste {
+            "auto-paste via SendInput (no permission needed; apps running as administrator only receive the clipboard)".into()
+        } else {
+            "auto_paste disabled; dictations go to the clipboard".into()
+        },
+        fix: None,
+    });
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         if !settings.auto_paste {
             checks.push(Check {
@@ -360,14 +386,63 @@ pub fn run(settings: &Settings) -> DoctorReport {
         }
     }
 
-    // 11. Per-app profile detection (Linux only - macOS always has NSWorkspace)
-    #[cfg(not(target_os = "macos"))]
+    // 11. Per-app profile detection (Linux only - macOS always has
+    // NSWorkspace, Windows always has GetForegroundWindow)
+    #[cfg(not(any(target_os = "macos", windows)))]
     checks.push(linux_app_detection_check());
 
     DoctorReport::from_checks(checks)
 }
 
-#[cfg(not(target_os = "macos"))]
+fn microphone_check(preferred: Option<&str>) -> Check {
+    use cpal::traits::DeviceTrait;
+    match crate::audio::resolve_input_device(preferred) {
+        Some(device) => {
+            let name = device.name().unwrap_or_else(|_| "unknown device".into());
+            match device.default_input_config() {
+                Ok(cfg) => Check {
+                    name: "microphone".into(),
+                    status: CheckStatus::Pass,
+                    message: format!(
+                        "{name} ({} Hz, {} ch){}",
+                        cfg.sample_rate().0,
+                        cfg.channels(),
+                        if cfg!(target_os = "macos") {
+                            "; macOS asks for mic permission on first recording"
+                        } else {
+                            ""
+                        }
+                    ),
+                    fix: None,
+                },
+                Err(e) => Check {
+                    name: "microphone".into(),
+                    status: CheckStatus::Fail,
+                    message: format!("{name} can't be opened: {e}"),
+                    fix: Some(mic_privacy_hint()),
+                },
+            }
+        }
+        None => Check {
+            name: "microphone".into(),
+            status: CheckStatus::Fail,
+            message: "no microphone found".into(),
+            fix: Some(mic_privacy_hint()),
+        },
+    }
+}
+
+fn mic_privacy_hint() -> String {
+    if cfg!(windows) {
+        "plug in a mic, and allow desktop apps under Settings > Privacy & security > Microphone".into()
+    } else if cfg!(target_os = "macos") {
+        "System Settings > Privacy & Security > Microphone".into()
+    } else {
+        "check that a capture device is connected and not muted (pavucontrol / alsamixer)".into()
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn linux_app_detection_check() -> Check {
     let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
@@ -530,13 +605,7 @@ pub fn model_matches(a: &str, b: &str) -> bool {
 }
 
 fn which(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::util::which(bin).is_some()
 }
 
 #[cfg(target_os = "macos")]
@@ -544,7 +613,17 @@ fn install_hint(pkg: &str) -> String {
     format!("brew install {pkg}")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn install_hint(pkg: &str) -> String {
+    match pkg {
+        "ollama" => "winget install Ollama.Ollama".into(),
+        "cmake" => "winget install Kitware.CMake".into(),
+        "gcc" => "winget install Microsoft.VisualStudio.2022.BuildTools (C++ workload)".into(),
+        other => format!("winget install {other}"),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn install_hint(pkg: &str) -> String {
     // Ollama isn't packaged in the major distro repos; the vendor's install
     // script is the documented path everywhere.
@@ -567,7 +646,12 @@ fn ollama_start_hint() -> String {
     "open -ga Ollama  # or: ollama serve".into()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn ollama_start_hint() -> String {
+    "start Ollama from the Start menu (or run `ollama serve`)".into()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn ollama_start_hint() -> String {
     "ollama serve  # or: systemctl --user start ollama, if you set that up".into()
 }

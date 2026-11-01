@@ -1,11 +1,19 @@
 [package]
 name = "vox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.89"
 
 [[bin]]
 name = "vox"
 path = "src/main.rs"
+
+# Windowless launcher for the tray on Windows (no console window flashes up
+# when it's started from the Start menu or at login). Same code as `vox tray`;
+# on macOS/Linux it's just an alias.
+[[bin]]
+name = "vox-tray"
+path = "src/bin/vox-tray.rs"
 
 # Shared dependency versions match the Vox macOS spec.
 [dependencies]
@@ -22,7 +30,6 @@ tray-icon = "0.24.1"
 enigo = "0.6.1"
 axum = "0.8.9"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "net"] }
-libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -45,9 +52,10 @@ objc2 = "0.6.4"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 
-# Whisper still runs on Linux, just on CPU instead of Metal.
+# Whisper runs on CPU on Linux and Windows.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 whisper-rs = "0.14"
+
 # libei/ashpd (portal-authorized input injection) alongside the default
 # x11rb backend: enigo tries libei first and falls back to x11rb per event,
 # so this is additive, not a replacement. Needed because plain XTest (what
@@ -56,10 +64,31 @@ whisper-rs = "0.14"
 # theoretical - while libei goes through the properly authorized
 # xdg-desktop-portal RemoteDesktop session a real input-injecting app is
 # supposed to use, one-time interactive consent and all.
+[target.'cfg(target_os = "linux")'.dependencies]
 enigo = { version = "0.6.1", features = ["libei_tokio"] }
+
+# Foreground-app detection, modifier-key state, RAM size, and opening the
+# settings page in the default browser.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Small, fast release binaries: the installer ships just the executables, and
+# the Whisper model is downloaded on first run.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
 
 # Vendored, patched copy of enigo 0.6.1: upstream's libei/portal backend
 # requests persistent RemoteDesktop consent (PersistMode::Application) but

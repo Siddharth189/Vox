@@ -127,11 +127,5 @@ fn run(bin: &str, args: &[&str]) -> Option<String> {
 }
 
 fn which(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::util::which(bin).is_some()
 }

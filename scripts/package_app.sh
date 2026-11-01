@@ -32,7 +32,7 @@ EOF
 
 cat > "${APP}/Contents/Resources/README.txt" <<'EOF'
 Vox - local-first menu-bar voice dictation.
-Hold the global hotkey, speak, release. Text is transcribed and pasted locally.
+Press Ctrl+. and speak; press it again (or hold it while you talk). Text is transcribed and pasted locally.
 EOF
 
 cat > "${APP}/Contents/Info.plist" <<EOF

@@ -15,7 +15,11 @@ use crate::process::TextProcessor;
 
 pub const DEFAULT_HOST: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_MODEL: &str = "llama3.2:latest";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A dictation that takes longer than this to polish is better delivered
+/// with local cleanup than not at all.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const KEEP_ALIVE_SECONDS: i64 = -1;
 const SEED: i64 = 42;
 const NUM_CTX: i64 = 4096;
@@ -72,6 +76,7 @@ impl OllamaProcessor {
     ) -> Result<Self> {
         let client = reqwest::blocking::Client::builder()
             .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|e| VoxError::Processing(e.to_string()))?;
         Ok(Self {
@@ -89,6 +94,14 @@ impl OllamaProcessor {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
     }
 
     fn build_messages(&self, raw: &str, req: &EnrichedRequest) -> Vec<ChatMessage> {
@@ -167,6 +180,36 @@ impl OllamaProcessor {
             .map_err(|e| VoxError::Processing(e.to_string()))?;
         Ok(parsed.message.content)
     }
+}
+
+/// True when Ollama answers at `host` and has `model` pulled.
+pub fn probe(host: &str, model: &str) -> bool {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+    else {
+        return false;
+    };
+    let url = format!("{}/api/tags", host.trim_end_matches('/'));
+    let Ok(resp) = client.get(url).send() else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(body) = resp.json::<serde_json::Value>() else {
+        return false;
+    };
+    body.get("models")
+        .and_then(|m| m.as_array())
+        .is_some_and(|models| {
+            models.iter().any(|m| {
+                m.get("name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|n| crate::doctor::model_matches(n, model))
+            })
+        })
 }
 
 fn build_request_body(model: &str, messages: &[ChatMessage], num_predict: usize) -> serde_json::Value {

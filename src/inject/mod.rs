@@ -1,7 +1,15 @@
 mod autopaste;
 mod clipboard;
 
-pub use autopaste::AutoPasteInjector;
+pub use autopaste::{AutoPasteInjector, RESTORE_DELAY};
+
+/// One-shot CLI commands exit right after pasting; give the background
+/// clipboard restore time to run first.
+pub fn wait_for_clipboard_restore(strategy: &str) {
+    if strategy.starts_with("auto-paste") {
+        std::thread::sleep(RESTORE_DELAY + std::time::Duration::from_millis(200));
+    }
+}
 pub use clipboard::ClipboardInjector;
 
 use crate::error::Result;

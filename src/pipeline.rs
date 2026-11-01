@@ -1,15 +1,40 @@
+use std::path::Path;
 use std::time::Instant;
 
-use crate::context::AppDetector;
+use crate::config::Settings;
+use crate::context::{self, AppDetector};
 use crate::error::Result;
-use crate::inject::TextInjector;
+use crate::inject::{AutoPasteInjector, ClipboardInjector, TextInjector};
 use crate::model::{
     elapsed_ms, AppContext, AudioChunk, EnrichedRequest, InjectionResult, LatencyMetrics, Mode,
     ProcessedText,
 };
 use crate::privacy::PrivacyPolicy;
-use crate::process::TextProcessor;
-use crate::stt::{self, Transcriber};
+use crate::process::{CleanupProcessor, TextProcessor};
+use crate::stt::{self, LocalWhisper, Transcriber};
+
+/// The real pipeline: platform app detection, local Whisper, LLM-or-local
+/// cleanup, and auto-paste (or clipboard-only). Loads and warms up the
+/// Whisper model, so call it off the UI thread.
+pub fn build_live_pipeline(settings: &Settings, model_path: &Path) -> Result<Pipeline> {
+    let transcriber = LocalWhisper::new(model_path)?
+        .with_input_language(settings.input_language.clone())
+        .with_initial_prompt(&settings.custom_dictionary);
+    transcriber.warm_up();
+
+    let processor = CleanupProcessor::from_settings(settings)?;
+    let injector: Box<dyn TextInjector> = if settings.auto_paste {
+        Box::new(AutoPasteInjector)
+    } else {
+        Box::new(ClipboardInjector)
+    };
+    Ok(Pipeline::new(
+        context::platform_detector(settings),
+        Box::new(transcriber),
+        Box::new(processor),
+        injector,
+    ))
+}
 
 pub struct Pipeline {
     pub detector: Box<dyn AppDetector>,

@@ -20,6 +20,9 @@ use crate::history::{self, CorrectionRequest, DictationRecord};
 use crate::model::{AppProfile, Mode};
 use crate::process::effective_system_prompt;
 
+pub const URL: &str = "http://127.0.0.1:8722";
+const PORT: u16 = 8722;
+
 const INDEX_HTML: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const DICTIONARY_JS: &str = include_str!("dictionary.js");
@@ -56,6 +59,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/history.js", get(|| async { js(HISTORY_JS) }))
         .route("/api/settings", get(get_settings).post(post_settings))
         .route("/api/models", get(get_models))
+        .route("/api/devices", get(get_devices))
         .route("/api/history", get(get_history))
         .route("/api/history/clear", post(clear_history))
         .route("/api/diagnostics/last", get(diagnostics_last))
@@ -66,7 +70,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .layer(middleware::from_fn(same_origin));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8722));
+    let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -87,11 +91,32 @@ async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+fn host_allowed(host: Option<&str>) -> bool {
+    matches!(host, Some("127.0.0.1:8722") | Some("localhost:8722"))
+}
+
+fn origin_allowed(origin: Option<&str>) -> bool {
+    match origin {
+        None => true,
+        Some(o) => o == "http://127.0.0.1:8722" || o == "http://localhost:8722",
+    }
+}
+
+/// Only the settings page itself may talk to this server.
+///
+/// The Origin check stops other sites from POSTing here. The Host check
+/// stops DNS rebinding: a page on `evil.example` that re-resolves its own
+/// name to 127.0.0.1 is "same-origin" with this server from the browser's
+/// point of view, sends no Origin header on GETs, and could otherwise read
+/// /api/history (every dictation) and /api/settings.
 async fn same_origin(req: Request<Body>, next: Next) -> Response {
-    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if origin != "http://127.0.0.1:8722" && origin != "http://localhost:8722" {
-            return (StatusCode::FORBIDDEN, "forbidden origin").into_response();
-        }
+    let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok());
+    if !host_allowed(host) {
+        return (StatusCode::FORBIDDEN, "forbidden host").into_response();
+    }
+    let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    if !origin_allowed(origin) {
+        return (StatusCode::FORBIDDEN, "forbidden origin").into_response();
     }
     next.run(req).await
 }
@@ -119,9 +144,25 @@ pub struct SettingsPatch {
     pub custom_aliases: Option<HashMap<String, Vec<String>>>,
     pub profiles: Option<HashMap<String, ProfileConfig>>,
     pub system_message_override: Option<Option<String>>,
+    #[serde(default)]
+    pub llm_cleanup: Option<bool>,
+    #[serde(default)]
+    pub sound_cues: Option<bool>,
+    /// Absent: unchanged. `null`: system default. A name: that microphone.
+    #[serde(default)]
+    pub input_device: Option<Option<String>>,
 }
 
 fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
+    if let Some(v) = patch.input_device {
+        settings.input_device = v;
+    }
+    if let Some(v) = patch.llm_cleanup {
+        settings.llm_cleanup = v;
+    }
+    if let Some(v) = patch.sound_cues {
+        settings.sound_cues = v;
+    }
     settings.output_language = patch.output_language;
     settings.input_language = patch
         .input_language
@@ -186,6 +227,11 @@ async fn get_models() -> Json<ModelsResponse> {
         whisper: Vec::new(),
         ollama: Vec::new(),
     }))
+}
+
+async fn get_devices() -> Json<Vec<String>> {
+    let result = tokio::task::spawn_blocking(crate::audio::input_device_names).await;
+    Json(result.unwrap_or_default())
 }
 
 fn list_whisper_models() -> Vec<String> {
@@ -308,4 +354,23 @@ fn preview_system_message(settings: &Settings) -> String {
         &settings.custom_dictionary,
         settings.system_message_override.as_deref(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_rebinding_hosts_and_foreign_origins() {
+        assert!(host_allowed(Some("127.0.0.1:8722")));
+        assert!(host_allowed(Some("localhost:8722")));
+        assert!(!host_allowed(Some("evil.example:8722")));
+        assert!(!host_allowed(Some("127.0.0.1.nip.io:8722")));
+        assert!(!host_allowed(None));
+
+        assert!(origin_allowed(None));
+        assert!(origin_allowed(Some("http://127.0.0.1:8722")));
+        assert!(!origin_allowed(Some("https://evil.example")));
+        assert!(!origin_allowed(Some("null")));
+    }
 }
