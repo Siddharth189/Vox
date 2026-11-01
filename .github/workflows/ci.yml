@@ -8,8 +8,13 @@ on:
 
 jobs:
   macos:
-    name: build, test, clippy (macos-14)
-    runs-on: macos-14
+    name: build, test, clippy (macos-15)
+    runs-on: macos-15
+    env:
+      # ggml's native ARM build fails with current Xcode (vmmlaq_s32 needs
+      # i8mm, which -mcpu=native doesn't enable), and a native build on a
+      # newer M-series runner wouldn't run on older Macs anyway.
+      CMAKE_PROJECT_INCLUDE_BEFORE: ${{ github.workspace }}/cmake/portable-cpu.cmake
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +40,18 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
 
       - name: cargo test
         run: cargo test --all-features
@@ -43,6 +59,11 @@ jobs:
   linux:
     name: build, test (ubuntu-latest)
     runs-on: ubuntu-latest
+    env:
+      # Use whisper-rs-sys's pre-generated bindings: bindgen with the
+      # libclang on newer distros (Ubuntu 26) emits a broken _IO_FILE that
+      # fails its own layout assertion. Also drops the libclang build dep.
+      WHISPER_DONT_GENERATE_BINDINGS: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -55,8 +76,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # cmake/gcc for whisper-rs, alsa for cpal, libxdo for enigo,
-      # gtk3/appindicator for tray-icon. kdotool/xdotool are runtime-only
-      # (shelled out to for active-window detection), not build deps.
+      # gtk3/appindicator for tray-icon, dbus for tao, openssl for reqwest.
+      # Listed explicitly rather than relying on what the runner image
+      # happens to preinstall. kdotool/xdotool are runtime-only (shelled out
+      # to for active-window detection), not build deps.
       - name: Install native dev headers
         run: |
           sudo apt-get update
@@ -65,7 +88,9 @@ jobs:
             libasound2-dev \
             libxdo-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libdbus-1-dev \
+            libssl-dev
 
       # Same informational-for-now stance as the macOS job.
       - name: cargo fmt --check
@@ -77,7 +102,78 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
 
       - name: cargo test
         run: cargo test --all-features
+
+  windows:
+    name: build, test, package (windows-latest)
+    runs-on: windows-latest
+    env:
+      # The zip below is distributed: build for a portable AVX2 baseline, not
+      # the runner's CPU (see cmake/portable-cpu.cmake).
+      CMAKE_PROJECT_INCLUDE_BEFORE: ${{ github.workspace }}/cmake/portable-cpu.cmake
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # The runner image ships MSVC, CMake, and LLVM (libclang for bindgen),
+      # which is everything whisper-rs needs.
+      - name: cargo clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo build --release
+        shell: bash
+        run: cargo build --release --locked 2>&1 | tee ci-build.log
+
+      # Native build and link failures (whisper.cpp, system libraries) end
+      # the log with the useful part; put it on the PR's checks page so it
+      # can be read without opening the raw log.
+      - name: Annotate build failure
+        if: failure()
+        shell: bash
+        run: |
+          msg=$(tail -n 80 ci-build.log | cut -c1-300 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=cargo build failed::${msg}"
+
+      - name: cargo test
+        run: cargo test --all-features
+
+      - name: vox smoke test
+        shell: pwsh
+        run: |
+          .\target\release\vox.exe --version
+          .\target\release\vox.exe doctor --json
+          exit 0
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\vox.exe, target\release\vox-tray.exe, scripts\install-windows.ps1, scripts\uninstall-windows.ps1 dist\
+          Compress-Archive -Path dist\* -DestinationPath Vox-windows-x86_64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vox-windows-x86_64
+          path: Vox-windows-x86_64.zip

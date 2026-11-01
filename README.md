@@ -3,29 +3,44 @@
 [![CI](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml/badge.svg)](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A local-first, menu-bar voice dictation app for macOS and Linux. Hold a global hotkey, speak,
-release. Whisper transcribes on-device, a local Ollama model cleans up the text for whatever
-app you're in, and the result lands at your cursor. Nothing leaves your machine on the
-default path.
+A local-first tray dictation app for **macOS, Windows, and Linux**. Press `Ctrl+.`, speak,
+press it again (or just hold it while you talk). Whisper transcribes on-device, the text is
+cleaned up for whatever app you're in, and the result lands at your cursor. Speaking runs at
+~150-200 wpm; typing at 40-90. Nothing leaves your machine.
 
-Vox started as a macOS app. Linux support is newer, and its rough edges are platform-dependent
-(which desktop environment and display server you run) rather than code-dependent. See
-[Linux support](#linux-support) below for exactly what to expect on your setup.
+The install is small: two ~6 MB executables plus a 57 MB speech model, downloaded on first
+run. A local LLM (Ollama) is an optional upgrade, not a requirement.
+
+Vox started as a macOS app. Linux support's rough edges are platform-dependent (which desktop
+environment and display server you run) rather than code-dependent. See
+[Linux support](#linux-support) and [Windows notes](#windows-notes) below.
 
 ## Features
 
-- **Hold-to-talk global hotkey.** Hold, speak, release. Default is `Control+Alt+Space`, fully
-  rebindable from the settings UI.
+- **One hotkey, two ways to use it.** Default `Ctrl+.` on every OS. *Tap* it to start
+  listening hands-free and tap again to finish, or *hold* it while you talk and release to
+  finish. `Esc` cancels. Strict hold-to-talk and press-to-toggle modes are also available.
+  Rebind it by pressing a new shortcut in the settings UI.
 - **Fully local pipeline.** Speech-to-text runs on-device via Whisper (Metal-accelerated on
-  macOS, CPU on Linux), and text cleanup runs against a local Ollama model. No cloud calls,
-  no API keys, no telemetry.
+  macOS, CPU on Windows and Linux). No cloud calls, no API keys, no telemetry.
+- **Instant cleanup, LLM optional.** Built-in cleanup (filler words, spacing, capitalization,
+  terminal/code-aware formatting, your dictionary) adds no latency and needs nothing extra.
+  When Ollama is running with the configured model, Vox uses it for deeper rewriting and
+  translation, and falls back to the built-in cleanup the moment Ollama isn't there.
+- **Knows when it's listening.** A short chirp on start and stop (toggle in settings), and the
+  tray icon turns red while listening and amber while transcribing.
+- **First run just works.** The tray downloads the speech model with progress in its menu.
+  Launch at login is one click in the tray menu.
 - **Per-app profiles.** Choose a writing style (clean prose, casual, professional email,
   code-editor-safe, shell command, Markdown) and a privacy level for each application, keyed
-  by bundle ID on macOS or WM_CLASS on Linux. Ships with sensible defaults for Slack, VS
-  Code, Terminal, Alacritty, Konsole, and 1Password. On Linux, this needs a way to ask the
-  desktop which window is focused; see [Linux support](#linux-support).
-- **Per-app privacy switch.** Mark any app as disabled (1Password is disabled by default) and
-  Vox will never transcribe, process, or inject text while that app is focused.
+  by bundle ID on macOS, executable name on Windows (`Code`, `slack`, `WindowsTerminal`), or
+  WM_CLASS on Linux, matched case-insensitively. Ships with defaults for Slack, VS Code,
+  terminals (Terminal, Windows Terminal, PowerShell, cmd, Alacritty, Konsole), and password
+  managers. On Linux, this needs a way to ask the desktop which window is focused; see
+  [Linux support](#linux-support).
+- **Per-app privacy switch.** Mark any app as disabled (1Password, Bitwarden, KeePass, and
+  KeePassXC are disabled by default) and Vox won't even open the microphone while that app
+  is focused.
 - **Dictation-aware LLM cleanup.** Fixes grammar, punctuation, and filler words, expands
   spoken forms ("pr six eight four" becomes "PR #684"), and rewrites requests instead of
   fulfilling them, so saying "write two lines summarizing the outage" produces two lines of
@@ -39,22 +54,29 @@ Vox started as a macOS app. Linux support is newer, and its rough edges are plat
   automatically, so misheard spellings get normalized back to your canonical form.
 - **Learns from your corrections.** Edit a past dictation in the history view, and Vox aligns
   the edit against your dictionary to learn a new spelling alias automatically.
-- **Auto-paste with layered fallbacks.** Tries a synthetic Cmd+V (macOS) or Ctrl+V (Linux)
-  paste, falls back further on macOS to `osascript`, and in the worst case always leaves the
-  cleaned text on your clipboard so you never lose a dictation to a missing permission.
+- **Auto-paste that respects your clipboard.** Synthesizes Cmd+V (macOS) or Ctrl+V
+  (Windows, Linux) once the hotkey's modifier keys are released, then puts your previous
+  clipboard (text or image) back. On Windows, dictations are kept out of Win+V clipboard
+  history. macOS falls back to `osascript`, and in the worst case the cleaned text stays on
+  your clipboard so you never lose a dictation to a missing permission.
 - **Custom system prompt override.** Replace the generated system prompt entirely with your
   own, previewed live before you save.
 - **Local settings web UI** at `http://127.0.0.1:8722`: language, models, hotkey, per-app
   profiles, custom dictionary and aliases, and a dictation history view with a per-stage
   latency breakdown (privacy check, transcribe, LLM cleanup, inject) for every dictation.
-- **`vox doctor`** checks the whole stack in one command: Whisper model present and valid,
-  Ollama reachable with your configured model pulled, Accessibility permission granted, and
-  the build toolchain present.
-- **Menu bar only.** No Dock icon. The tray icon turns red while recording.
-- **Locked-down local storage.** Every settings and history file is written `0600`/`0700`, so
-  no dictation transcript or config is ever left world-readable on disk.
+- **`vox doctor`** checks the whole stack in one command: microphone, hotkey, Whisper model
+  present and valid, Ollama (optional), and Accessibility permission on macOS.
+- **Tray only.** No Dock icon or taskbar window.
+- **Locked-down local storage.** Settings and history are written atomically, `0600`/`0700` on
+  macOS/Linux and under the per-user `%LOCALAPPDATA%` on Windows. The settings server only
+  answers its own page: Host and Origin are checked, which blocks DNS-rebinding reads of your
+  history.
 
 ## Requirements
+
+**Windows**: Windows 10 or 11 (x64). Nothing else to run a release. To build from source:
+[Rust](https://rustup.rs), Visual Studio 2022 Build Tools (C++ workload), CMake, and LLVM
+(`winget install Kitware.CMake LLVM.LLVM`).
 
 **macOS**: macOS 13 or later (Apple Silicon tested), Xcode Command Line Tools, `cmake`, a
 stable Rust toolchain.
@@ -65,10 +87,30 @@ and the tray icon (`gtk3-devel` + `libayatana-appindicator-gtk3-devel`, or the `
 equivalents). `scripts/install-linux.sh` installs all of these for you on Fedora, Debian/
 Ubuntu, or Arch.
 
-**Both**: [Ollama](https://ollama.com), with a model pulled (`ollama pull llama3.2`), and a
-Whisper ggml model, fetched via `scripts/download_model.sh`.
+**Optional, any OS**: [Ollama](https://ollama.com) with a model pulled (`ollama pull
+llama3.2`) for LLM rewriting and translation. The Whisper model is downloaded by Vox itself
+(`vox download-model`, or automatically by the tray on first run).
 
 ## Installation
+
+### Windows
+
+From a checkout (builds, then installs for the current user, no admin needed):
+
+```powershell
+git clone https://github.com/Siddharth189/Vox.git
+cd Vox
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+
+From a release zip (`Vox-windows-x86_64.zip`, built by CI): unzip, then run
+`install-windows.ps1 -BinDir .` from that folder.
+
+The installer copies `vox.exe` (CLI) and `vox-tray.exe` (the windowless tray) to
+`%LOCALAPPDATA%\Programs\Vox`, adds it to your PATH, creates a **Vox** Start-menu shortcut,
+downloads the speech model, turns on launch at login, and starts the tray. Re-run it to
+upgrade; settings and history are kept. `-Model small-q5_1`, `-NoAutostart`, and `-DryRun`
+are available. `scripts\uninstall-windows.ps1 [-RemoveData]` removes it.
 
 ### macOS
 
@@ -79,10 +121,11 @@ cd Vox
 ```
 
 `install.sh` builds Vox, installs the CLI to `~/.local/bin/vox`, packages `Vox.app` into
-`~/Applications` (not `/Applications`), downloads the Whisper model, pulls the configured
-Ollama model, and starts the tray. It's idempotent and safe to re-run after a `git pull`: it
-only writes a fresh `settings.yaml` if one doesn't already exist, so your saved settings and
-dictionary survive a reinstall.
+`~/Applications` (not `/Applications`), downloads the Whisper model, and starts the tray. Set
+`VOX_WITH_LLM=1` to also install Ollama and pull the configured model, and
+`VOX_WHISPER_MODEL=small-q5_1` for a larger speech model. It's idempotent and safe to re-run
+after a `git pull`: it only writes a fresh `settings.yaml` if one doesn't already exist, so
+your saved settings and dictionary survive a reinstall.
 
 To preview every step without touching your system, set `VOX_INSTALL_DRY_RUN=1`. To let the
 installer fetch the source itself instead of cloning manually, set `VOX_REPO_URL`.
@@ -91,7 +134,7 @@ Manual installation:
 
 ```bash
 cargo build --release --locked
-./scripts/download_model.sh small
+./target/release/vox download-model
 ./scripts/package_app.sh
 cp -R dist/Vox.app ~/Applications/
 open ~/Applications/Vox.app
@@ -107,39 +150,79 @@ cd Vox
 
 `install-linux.sh` installs the native build dependencies for your package manager (dnf/apt/
 pacman), builds Vox, installs the CLI to `~/.local/bin/vox`, downloads the Whisper model,
-pulls the configured Ollama model, and writes a `~/.config/systemd/user/vox.service` unit
-(not enabled by default - see [Linux support](#linux-support) for why). Data lives under
-`~/.local/share/vox`, following the XDG Base Directory spec. `VOX_INSTALL_DRY_RUN=1` and
-`VOX_REPO_URL` work the same as on macOS.
+and writes a `~/.config/systemd/user/vox.service` unit (not enabled by default - see
+[Linux support](#linux-support) for why; the tray's "Launch at login" uses XDG autostart
+instead). `VOX_WITH_LLM=1` adds Ollama. Data lives under `~/.local/share/vox`, following the
+XDG Base Directory spec. `VOX_INSTALL_DRY_RUN=1` and `VOX_REPO_URL` work the same as on macOS.
 
 Manual installation:
 
 ```bash
 cargo build --release --locked
-./scripts/download_model.sh small
+./target/release/vox download-model
 ./target/release/vox tray
 ```
 
 ## Usage
 
-Hold the hotkey, speak, release. The cleaned-up text is pasted at your cursor.
+Click into any text field, press `Ctrl+.`, speak, and press `Ctrl+.` again (or hold it while
+speaking and let go). The cleaned-up text is pasted at your cursor. `Esc` cancels.
 
 ```
-vox check                 quick Ollama reachability check
-vox doctor [--json]       full readiness report
-vox demo [--dry-run] "text"   run text through the real LLM cleanup pipeline
+vox tray                  run the tray app (Windows: vox-tray.exe / Start menu "Vox")
+vox setup                 download the speech model and run the readiness check
+vox doctor [--json]       readiness report: mic, hotkey, model, Ollama, permissions
+vox download-model [NAME] fetch a Whisper model (--list for choices) and select it
+vox transcribe FILE.wav   transcribe a recording (benchmarking / support)
 vox listen [--secs 5]     record from the mic once and clean up the result
-vox tray                  launch the menu-bar app
+vox demo [--dry-run] "text"   run text through the cleanup pipeline
 vox inject-test "text"    exercise the auto-paste path directly
+vox autostart on|off      launch the tray at login
+vox check                 quick Ollama reachability check
 ```
 
-Open the settings UI at `http://127.0.0.1:8722` while the tray is running to configure
-languages, models, the hotkey, per-app profiles, and your custom dictionary.
+Open the settings UI from the tray menu (or `http://127.0.0.1:8722`) to configure languages,
+models, the hotkey, per-app profiles, and your custom dictionary.
+
+### Speech models
+
+| Model | Size | Notes |
+|---|---|---|
+| `base-q5_1` (default) | 57 MB | multilingual, fast on any CPU |
+| `base.en-q5_1` | 57 MB | English only, slightly more accurate for English |
+| `small-q5_1` | 181 MB | multilingual, more accurate, ~3x slower |
+| `large-v3-turbo-q5_0` | 547 MB | most accurate; best with a GPU (macOS) |
+
+`vox download-model small-q5_1` downloads and switches; the tray picks it up without a
+restart.
+
+## Windows notes
+
+Tested on Windows 11 (i7-1185G7, 4 cores, no GPU) with the default `base-q5_1` model,
+dictating into a real text box with the real hotkey and microphone:
+
+| What | Result |
+|---|---|
+| Stop -> text at cursor, 3-5 s utterance | 0.7-1.1 s |
+| Stop -> text at cursor, 18 s paragraph | ~2.9 s |
+| Accuracy on those clips | word-perfect |
+| Idle CPU / memory | ~0.02% / ~260 MB |
+
+- **Per-app profiles** key off the executable name (`Code`, `slack`, `WindowsTerminal`,
+  `powershell`). Terminals get the shell profile: no forced capital, no trailing period.
+- **Apps running as administrator** can't receive synthesized keystrokes from a normal
+  process (Windows UIPI). The text is still on the clipboard; press Ctrl+V. Run Vox elevated
+  only if you dictate into elevated apps a lot.
+- **`Ctrl+.` is global** while Vox runs, so it takes over VS Code's "Quick Fix" binding.
+  Pick another shortcut in Settings if you rely on that.
+- Dictations are excluded from Win+V clipboard history and cloud clipboard, and your
+  previous clipboard is restored after each paste.
+- Logs: `%LOCALAPPDATA%\Vox\tray.log`.
 
 ## Linux support
 
 The pipeline itself, audio capture, Whisper transcription, Ollama cleanup, the settings web
-UI, and history, is identical on Linux and macOS. What differs is the handful of things that
+UI, and history, is identical on Linux, Windows, and macOS. What differs is the handful of things that
 touch the desktop directly, and how well those work depends entirely on your session. This
 section reflects real testing on Fedora 42 with KDE Plasma on Wayland, not assumptions.
 
@@ -209,6 +292,10 @@ section reflects real testing on Fedora 42 with KDE Plasma on Wayland, not assum
   process itself runs correctly; the actual hold-to-talk key press wasn't verified end-to-end
   by automated testing (it requires physical keyboard input, same class of limitation as
   auto-paste above) - run `vox tray` from a terminal and try it once to confirm.
+  `global-hotkey` grabs keys through X11, so on a **native Wayland session the hotkey only
+  fires while an XWayland window is focused**. The proper fix is the
+  `org.freedesktop.portal.GlobalShortcuts` portal (KDE 6, GNOME 48+), which isn't wired up
+  yet. Until then, bind a desktop shortcut to `vox` or use an X11 session.
 
 Run `vox doctor` after installing; it reports all of the above for your specific session,
 with an install command or fix suggestion for whatever's missing.
@@ -222,8 +309,9 @@ or macOS itself. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full
 
 ## Development
 
-CI builds, tests, and lints on both `macos-14` and `ubuntu-latest` on every push. Check the
-badge above or the Actions tab for current status.
+CI builds, tests, and lints on `macos-14`, `ubuntu-latest`, and `windows-latest` on every
+push; the Windows job also uploads an installable `Vox-windows-x86_64.zip`. Check the badge
+above or the Actions tab for current status.
 
 ```bash
 cargo test
@@ -231,14 +319,30 @@ cargo build --release
 cargo clippy --all-targets --all-features
 ./target/release/vox doctor
 ./target/release/vox demo --dry-run "hey john review pr six eight four"
+./target/release/vox transcribe some-recording.wav --repeat 3   # STT latency/accuracy
 ```
 
+**Windows**: build with the MSVC toolchain (Visual Studio 2022 Build Tools with the C++
+workload, plus CMake and LLVM for whisper-rs's bindgen). The `x86_64-pc-windows-gnu`
+target doesn't work out of the box: whisper-rs-sys 0.13 passes MSVC-only flags and ggml
+names its archives without the `lib` prefix.
+
+**Release builds you distribute** must not be tuned to the build machine: whisper.cpp
+defaults to `-march=native`, which crashes with "illegal instruction" on CPUs without the
+build machine's extensions (e.g. AVX-512). Set
+`CMAKE_PROJECT_INCLUDE_BEFORE=<repo>/cmake/portable-cpu.cmake` to build for the portable
+AVX2 baseline instead (CI does this). Builds for your own machine are fastest without it.
+
+Useful environment variables: `VOX_DATA_DIR` (data dir override), `VOX_WHISPER_THREADS`,
+`VOX_WHISPER_TIMINGS=1` (whisper system info and timings to stderr), `VOX_FULL_AUDIO_CTX=1`
+(disable the short-clip encoder speedup), `RUST_LOG=vox=debug`.
+
 Root `Cargo.toml` gates Apple-only crates (`core-graphics`, `core-foundation`, `objc2*`) and
-Metal-accelerated Whisper behind `cfg(target_os = "macos")`; Linux gets the same `whisper-rs`
-on its default CPU backend instead. The handful of things with no cross-platform crate at all
-(app-context detection, and the exact keystroke `enigo` synthesizes for paste) are the only
-places with a real `#[cfg(target_os = "macos")]` / `#[cfg(not(target_os = "macos"))]` split in
-application code - see `src/context/mac_detector.rs` next to `src/context/linux_detector.rs`
+Metal-accelerated Whisper behind `cfg(target_os = "macos")`, and `windows-sys` behind
+`cfg(windows)`; Linux and Windows get `whisper-rs` on its CPU backend. The handful of things
+with no cross-platform crate (app-context detection, modifier-key state, the exact paste
+keystroke, launch at login) are the only places with a per-OS `cfg` split in application
+code - see `src/context/` (`mac_detector.rs`, `windows_detector.rs`, `linux_detector.rs`)
 for the pattern to follow if you're adding another platform-specific piece.
 
 ## Contributing
@@ -247,7 +351,8 @@ Issues and pull requests are welcome. A few things to know before opening one:
 
 - Keep changes scoped. New behavior should land as a new trait implementation where possible,
   not a rewrite of `pipeline.rs`.
-- Run `cargo test` and `cargo clippy` before submitting; CI runs both on macOS and Linux.
+- Run `cargo test` and `cargo clippy` before submitting; CI runs both on macOS, Linux, and
+  Windows.
 - If you're changing prompt text, few-shot examples, or dictionary normalization rules, add or
   update a test in the same module. Those behaviors are easy to regress silently.
 - If you're improving Linux desktop support (a compositor-specific hotkey backend, another

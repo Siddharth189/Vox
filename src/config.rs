@@ -8,8 +8,19 @@ use crate::error::{Result, VoxError};
 use crate::model::{AppProfile, Format, Privacy};
 use crate::secure_fs;
 
-#[cfg(target_os = "macos")]
+/// Where settings, history, logs, and models live. `VOX_DATA_DIR` overrides
+/// the platform default (portable installs, tests).
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("VOX_DATA_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    platform_data_dir()
+}
+
+#[cfg(target_os = "macos")]
+fn platform_data_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home)
             .join("Library")
@@ -19,9 +30,25 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
+/// %LOCALAPPDATA%\Vox rather than the roaming %APPDATA%: models are hundreds
+/// of MB and dictation history shouldn't sync to other machines.
+#[cfg(windows)]
+fn platform_data_dir() -> PathBuf {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(local) if !local.is_empty() => PathBuf::from(local).join("Vox"),
+        _ => match std::env::var_os("USERPROFILE") {
+            Some(home) => PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("Vox"),
+            None => PathBuf::from("."),
+        },
+    }
+}
+
 /// XDG Base Directory Specification: $XDG_DATA_HOME, falling back to ~/.local/share.
-#[cfg(not(target_os = "macos"))]
-pub fn data_dir() -> PathBuf {
+#[cfg(not(any(target_os = "macos", windows)))]
+fn platform_data_dir() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
         if !xdg.is_empty() {
             return PathBuf::from(xdg).join("vox");
@@ -41,7 +68,23 @@ pub fn settings_path() -> PathBuf {
     data_dir().join("settings.yaml")
 }
 
-#[cfg(not(target_os = "macos"))]
+pub fn log_path() -> PathBuf {
+    data_dir().join("tray.log")
+}
+
+#[cfg(windows)]
+pub fn total_ram_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+        Some(status.ullTotalPhys)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn total_ram_bytes() -> Option<u64> {
     let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = contents.lines().find(|l| l.starts_with("MemTotal:"))?;
@@ -65,19 +108,42 @@ pub fn low_resource_mode() -> bool {
     total_ram_bytes().is_some_and(|b| b < LOW_RAM_THRESHOLD_BYTES)
 }
 
+/// How the dictation hotkey behaves.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyMode {
+    /// Tap to start hands-free and tap again to finish, or hold to talk and
+    /// release to finish.
+    #[default]
+    Hybrid,
+    /// Strict push-to-talk: recording lasts exactly as long as the key is held.
+    Hold,
+    /// Every press toggles recording on/off.
+    Toggle,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HotkeyConfig {
     pub enabled: bool,
     pub modifiers: Vec<String>,
     pub key: String,
+    #[serde(default)]
+    pub mode: HotkeyMode,
 }
+
+pub const DEFAULT_HOTKEY_MODIFIERS: &[&str] = &["control"];
+pub const DEFAULT_HOTKEY_KEY: &str = "Period";
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            modifiers: vec!["control".into(), "alt".into()],
-            key: "Space".into(),
+            modifiers: DEFAULT_HOTKEY_MODIFIERS
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
+            key: DEFAULT_HOTKEY_KEY.into(),
+            mode: HotkeyMode::Hybrid,
         }
     }
 }
@@ -119,6 +185,19 @@ pub struct Settings {
     pub system_message_override: Option<String>,
     #[serde(default)]
     pub hotkey: HotkeyConfig,
+    /// Polish text with the local Ollama model when it's running. When it
+    /// isn't (or this is off), Vox uses its built-in rule-based cleanup, which
+    /// adds no latency and needs no extra install.
+    #[serde(default = "default_true")]
+    pub llm_cleanup: bool,
+    /// Short start/stop tones so you know when Vox is listening without
+    /// looking at the tray.
+    #[serde(default = "default_true")]
+    pub sound_cues: bool,
+    /// Microphone to record from (case-insensitive name match). None, or a
+    /// name that isn't connected right now, means the system default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_device: Option<String>,
     pub profiles: HashMap<String, ProfileConfig>,
 }
 
@@ -130,9 +209,17 @@ fn default_auto() -> String {
     "auto".into()
 }
 
+/// Whisper model downloaded on first run. Quantized `base` (multilingual,
+/// ~57 MB) transcribes a 5 s utterance in well under a second on a laptop
+/// CPU; `vox download-model small-q5_1` trades ~3x the time for accuracy.
+pub const DEFAULT_WHISPER_MODEL_NAME: &str = "base-q5_1";
+
+pub fn whisper_model_path(name: &str) -> PathBuf {
+    model_dir().join(format!("ggml-{name}.bin"))
+}
+
 fn default_whisper_model() -> String {
-    model_dir()
-        .join("ggml-small.bin")
+    whisper_model_path(DEFAULT_WHISPER_MODEL_NAME)
         .to_string_lossy()
         .into_owned()
 }
@@ -231,6 +318,29 @@ impl Settings {
             },
         );
 
+        // Windows keys profiles by executable name without `.exe` (matched
+        // case-insensitively, so "Slack"/"Code"/"1Password" above already
+        // cover slack.exe, Code.exe, and 1Password.exe).
+        for shell in ["WindowsTerminal", "powershell", "pwsh", "cmd"] {
+            profiles.insert(
+                shell.into(),
+                ProfileConfig {
+                    format: Format::Shell,
+                    privacy: Privacy::LocalOnly,
+                },
+            );
+        }
+        // Password managers on every platform: never listen or paste there.
+        for vault in ["KeePassXC", "KeePass", "Bitwarden"] {
+            profiles.insert(
+                vault.into(),
+                ProfileConfig {
+                    format: Format::CleanProse,
+                    privacy: Privacy::Disabled,
+                },
+            );
+        }
+
         Self {
             auto_paste: true,
             output_language: "auto".into(),
@@ -241,12 +351,25 @@ impl Settings {
             custom_aliases: HashMap::new(),
             system_message_override: None,
             hotkey: HotkeyConfig::default(),
+            llm_cleanup: true,
+            sound_cues: true,
+            input_device: None,
             profiles,
         }
     }
 
+    /// Profile for an app id (bundle ID, WM_CLASS, or exe name). Exact match
+    /// first, then case-insensitive, since Windows exe names and Linux
+    /// WM_CLASS values vary in case between apps and versions.
     pub fn profile_for(&self, bundle_id: &str) -> AppProfile {
         if let Some(p) = self.profiles.get(bundle_id) {
+            return p.into();
+        }
+        if let Some((_, p)) = self
+            .profiles
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(bundle_id))
+        {
             return p.into();
         }
         if let Some(p) = self.profiles.get("default") {
@@ -292,6 +415,14 @@ impl Settings {
         self.custom_dictionary = sanitize_dictionary(&self.custom_dictionary);
         self.custom_aliases = sanitize_aliases(&self.custom_aliases);
 
+        if self
+            .input_device
+            .as_deref()
+            .is_some_and(|d| d.trim().is_empty() || d.eq_ignore_ascii_case("default"))
+        {
+            self.input_device = None;
+        }
+
         if let Some(ref override_msg) = self.system_message_override {
             let trimmed = override_msg.trim();
             if trimmed.is_empty() {
@@ -305,15 +436,26 @@ impl Settings {
             let has_primary = self.hotkey.modifiers.iter().any(|m| {
                 matches!(
                     m.to_ascii_lowercase().as_str(),
-                    "control" | "ctrl" | "alt" | "option" | "super" | "cmd" | "command"
+                    "control"
+                        | "ctrl"
+                        | "alt"
+                        | "option"
+                        | "super"
+                        | "cmd"
+                        | "command"
+                        | "win"
+                        | "windows"
+                        | "meta"
                 )
             });
             if self.hotkey.modifiers.is_empty() || !has_primary {
-                self.hotkey.modifiers = vec!["control".into(), "alt".into()];
+                self.hotkey.modifiers = HotkeyConfig::default().modifiers;
             }
-            if self.hotkey.key.trim().is_empty() {
-                self.hotkey.key = "Space".into();
-            }
+            // Store the canonical key name ("." -> "Period") so what's on
+            // disk is exactly what gets registered; anything unparseable
+            // falls back to the default instead of binding nothing.
+            self.hotkey.key = crate::hotkey::canonical_key_name(&self.hotkey.key)
+                .unwrap_or_else(|| DEFAULT_HOTKEY_KEY.into());
         }
     }
 
@@ -328,7 +470,10 @@ impl Settings {
                     settings
                 }
                 Err(err) => {
-                    eprintln!("warning: failed to parse settings ({}): {err}; using defaults", path.display());
+                    eprintln!(
+                        "warning: failed to parse settings ({}): {err}; using defaults",
+                        path.display()
+                    );
                     Self::with_defaults()
                 }
             },
@@ -338,7 +483,10 @@ impl Settings {
                 settings
             }
             Err(err) => {
-                eprintln!("warning: failed to read settings ({}): {err}; using defaults", path.display());
+                eprintln!(
+                    "warning: failed to read settings ({}): {err}; using defaults",
+                    path.display()
+                );
                 Self::with_defaults()
             }
         }
@@ -352,8 +500,8 @@ impl Settings {
         if let Some(parent) = path.parent() {
             secure_fs::ensure_private_dir(parent)?;
         }
-        let yaml = serde_yaml::to_string(&sanitized)
-            .map_err(|e| VoxError::Config(e.to_string()))?;
+        let yaml =
+            serde_yaml::to_string(&sanitized).map_err(|e| VoxError::Config(e.to_string()))?;
         secure_fs::write_private_file(&path, yaml)?;
         Ok(())
     }
@@ -483,7 +631,10 @@ profiles:
         s.sanitize();
         let yaml = s.to_yaml().unwrap();
         let (_again, migrated) = Settings::from_yaml_checked(&yaml).unwrap();
-        assert!(!migrated, "canonical settings with aliases must not report migration");
+        assert!(
+            !migrated,
+            "canonical settings with aliases must not report migration"
+        );
     }
 
     #[test]
@@ -492,8 +643,65 @@ profiles:
         s.hotkey.modifiers = vec!["shift".into()];
         s.hotkey.key = "".into();
         s.sanitize();
-        assert_eq!(s.hotkey.modifiers, vec!["control", "alt"]);
+        assert_eq!(s.hotkey.modifiers, vec!["control"]);
+        assert_eq!(s.hotkey.key, "Period");
+    }
+
+    #[test]
+    fn default_hotkey_is_ctrl_period_hybrid() {
+        let s = Settings::with_defaults();
+        assert_eq!(s.hotkey.modifiers, vec!["control"]);
+        assert_eq!(s.hotkey.key, "Period");
+        assert_eq!(s.hotkey.mode, HotkeyMode::Hybrid);
+        assert!(crate::hotkey::hotkey_from_config(&s.hotkey).is_ok());
+    }
+
+    #[test]
+    fn hotkey_key_is_canonicalized() {
+        let mut s = Settings::with_defaults();
+        s.hotkey.key = ".".into();
+        s.sanitize();
+        assert_eq!(s.hotkey.key, "Period");
+        s.hotkey.key = "not a key".into();
+        s.sanitize();
+        assert_eq!(s.hotkey.key, "Period");
+        // existing users' Ctrl+Alt+Space survives untouched
+        s.hotkey.modifiers = vec!["control".into(), "alt".into()];
+        s.hotkey.key = "Space".into();
+        s.sanitize();
         assert_eq!(s.hotkey.key, "Space");
+        assert_eq!(s.hotkey.modifiers, vec!["control", "alt"]);
+    }
+
+    #[test]
+    fn old_settings_without_new_fields_still_load() {
+        let yaml = r#"
+auto_paste: true
+whisper_model: /tmp/m.bin
+llm_model: llama3.2:latest
+hotkey:
+  enabled: true
+  modifiers: [control, alt]
+  key: Space
+profiles:
+  default:
+    format: clean_prose
+    privacy: local_only
+"#;
+        let s = Settings::from_yaml(yaml).unwrap();
+        assert_eq!(s.hotkey.mode, HotkeyMode::Hybrid);
+        assert!(s.llm_cleanup);
+        assert!(s.sound_cues);
+    }
+
+    #[test]
+    fn profile_lookup_is_case_insensitive() {
+        let s = Settings::with_defaults();
+        assert_eq!(s.profile_for("slack").format, Format::Casual);
+        assert_eq!(s.profile_for("code").format, Format::CodeContext);
+        assert_eq!(s.profile_for("WINDOWSTERMINAL").format, Format::Shell);
+        assert_eq!(s.profile_for("keepassxc").privacy, Privacy::Disabled);
+        assert_eq!(s.profile_for("notepad").format, Format::CleanProse);
     }
 
     #[test]

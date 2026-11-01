@@ -1,7 +1,8 @@
 use crate::config;
 use crate::model::{AppProfile, Format, Mode};
 
-const BASE_PROMPT: &str = "You are a dictation post-processor, NOT an assistant. Your only job is to rewrite \
+const BASE_PROMPT: &str =
+    "You are a dictation post-processor, NOT an assistant. Your only job is to rewrite \
 the user's raw dictated speech into clean, ready-to-send text. The raw speech may \
 be messy, code-switched, transliterated, or mixed-language (for example Hinglish: \
 Hindi words spoken with English words and Latin spelling). Normalize the user's \
@@ -33,7 +34,8 @@ rewritten text and nothing else.";
 // hold nuance, which a resource-constrained setup doesn't have room for
 // anyway once you account for the model itself being smaller too.
 #[cfg(not(target_os = "macos"))]
-const TRIMMED_BASE_PROMPT: &str = "You are a dictation post-processor, not an assistant. Rewrite the \
+const TRIMMED_BASE_PROMPT: &str =
+    "You are a dictation post-processor, not an assistant. Rewrite the \
 user's raw dictated speech into clean text: fix grammar, punctuation, and \
 capitalization, expand spoken-out identifiers and numbers into their written \
 form, and remove filler words. Preserve technical terms, ticket numbers, and proper \
@@ -181,7 +183,8 @@ pub fn fewshot() -> Vec<(String, String)> {
         ),
         (
             "fix null pointer in auth middleware dont merge until qa signs off".into(),
-            "Fix null pointer in authentication middleware. Do not merge until QA signs off.".into(),
+            "Fix null pointer in authentication middleware. Do not merge until QA signs off."
+                .into(),
         ),
     ]
 }

@@ -45,7 +45,16 @@ mod mac {
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
-#[cfg(not(target_os = "macos"))]
+/// Windows has no Accessibility-style consent for SendInput: synthesized
+/// input reliably reaches any window at the same or lower integrity level.
+#[cfg(windows)]
+pub fn accessibility_trusted() -> bool {
+    true
+}
+
+/// Linux has no trust API at all; on Wayland a "successful" synthesis may
+/// still not reach the focused window, so treat it as unverified.
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn accessibility_trusted() -> bool {
     false
 }

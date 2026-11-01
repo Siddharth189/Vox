@@ -205,6 +205,8 @@
     .stage-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-top: 0.5rem; }
     .stage-card { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.7rem; min-width: 0; }
     .stage-text { margin-top: 0.4rem; font-size: 0.78rem; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
+    .hotkey-capture { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 9rem; text-align: center; cursor: pointer; }
+    .hotkey-capture.recording { border-color: var(--accent); color: var(--accent); }
     @media (max-width: 720px) {
       .history-layout { grid-template-columns: 1fr; }
       .latency-row, .stage-row { grid-template-columns: 1fr 1fr; }
@@ -228,18 +230,35 @@
           <div class="field-desc">Language you dictate in. Auto-detect works for most cases.</div>
         </div>
         <div class="field-control">
-          <input id="input_language" type="text" placeholder="auto" />
+          <input id="input_language" type="text" placeholder="auto" list="language_options" />
         </div>
       </div>
       <div class="field-row">
         <div class="field-info">
           <div class="field-title">Output language</div>
-          <div class="field-desc">Final writing language.</div>
+          <div class="field-desc">Final writing language. Translation needs the LLM cleanup below.</div>
         </div>
         <div class="field-control">
-          <input id="output_language" type="text" placeholder="auto" />
+          <input id="output_language" type="text" placeholder="auto" list="language_options" />
         </div>
       </div>
+      <datalist id="language_options">
+        <option value="auto"></option>
+        <option value="English"></option>
+        <option value="Hinglish / mixed Hindi-English"></option>
+        <option value="Hindi"></option>
+        <option value="Tamil"></option>
+        <option value="Spanish"></option>
+        <option value="French"></option>
+        <option value="German"></option>
+        <option value="Portuguese"></option>
+        <option value="Italian"></option>
+        <option value="Russian"></option>
+        <option value="Japanese"></option>
+        <option value="Korean"></option>
+        <option value="Chinese"></option>
+        <option value="Arabic"></option>
+      </datalist>
     </section>
 
     <section class="section" id="section-models">
@@ -251,6 +270,18 @@
         </div>
         <div class="field-control">
           <select id="whisper_model"></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Polish with a local LLM</div>
+          <div class="field-desc">Uses Ollama when it's running for rewriting and translation. Without it, Vox uses fast built-in cleanup.</div>
+        </div>
+        <div class="field-control" style="text-align:right">
+          <label class="switch">
+            <input id="llm_cleanup" type="checkbox" />
+            <span class="track"></span>
+          </label>
         </div>
       </div>
       <div class="field-row">
@@ -280,20 +311,45 @@
       </div>
       <div class="field-row">
         <div class="field-info">
-          <div class="field-title">Push-to-talk hotkey</div>
-          <div class="field-desc">Hold to record, release to paste.</div>
+          <div class="field-title">Dictation hotkey</div>
+          <div class="field-desc">Tap to start and tap again to finish, or hold while you speak. Esc cancels.</div>
         </div>
         <div class="field-control">
           <div class="row">
-            <input id="hotkey_modifiers" type="text" placeholder="control,alt" />
-            <input id="hotkey_key" type="text" placeholder="Space" />
+            <button type="button" class="hotkey-capture" id="hotkey_capture" title="Click, then press a new shortcut">Ctrl + .</button>
+            <select id="hotkey_mode">
+              <option value="hybrid">Tap or hold</option>
+              <option value="hold">Hold to talk</option>
+              <option value="toggle">Press to start/stop</option>
+            </select>
           </div>
           <div class="field-hint">
             <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.82rem;color:var(--muted)">
               <input id="hotkey_enabled" type="checkbox" style="width:auto" /> Enabled
             </label>
-            &nbsp;·&nbsp;Comma-separated modifiers.
+            &nbsp;·&nbsp;<span id="hotkey_hint">Click the shortcut to change it.</span>
           </div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Microphone</div>
+          <div class="field-desc">Falls back to the system default when the chosen one isn't connected.</div>
+        </div>
+        <div class="field-control">
+          <select id="input_device"></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Sound cues</div>
+          <div class="field-desc">A short chirp when listening starts and stops.</div>
+        </div>
+        <div class="field-control" style="text-align:right">
+          <label class="switch">
+            <input id="sound_cues" type="checkbox" />
+            <span class="track"></span>
+          </label>
         </div>
       </div>
     </section>

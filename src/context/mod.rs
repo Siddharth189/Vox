@@ -1,7 +1,9 @@
+#[cfg(not(any(target_os = "macos", windows)))]
+mod linux_detector;
 #[cfg(target_os = "macos")]
 mod mac_detector;
-#[cfg(not(target_os = "macos"))]
-mod linux_detector;
+#[cfg(windows)]
+mod windows_detector;
 
 use crate::config::Settings;
 use crate::error::Result;
@@ -38,7 +40,25 @@ impl AppDetector for StubAppDetector {
     }
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
+pub use linux_detector::LinuxAppDetector;
 #[cfg(target_os = "macos")]
 pub use mac_detector::MacAppDetector;
-#[cfg(not(target_os = "macos"))]
-pub use linux_detector::LinuxAppDetector;
+#[cfg(windows)]
+pub use windows_detector::WindowsAppDetector;
+
+/// The real foreground-app detector for this platform.
+pub fn platform_detector(settings: &Settings) -> Box<dyn AppDetector> {
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(MacAppDetector::new(settings.clone()))
+    }
+    #[cfg(windows)]
+    {
+        Box::new(WindowsAppDetector::new(settings.clone()))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Box::new(LinuxAppDetector::new(settings.clone()))
+    }
+}

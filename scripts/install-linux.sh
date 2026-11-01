@@ -52,8 +52,9 @@ pkg_manager() {
   fi
 }
 
-# Build deps (alsa/cpal, libxdo/enigo, gtk3+appindicator/tray-icon, cmake+cc
-# for whisper-rs) plus kdotool/xdotool for per-app profile detection.
+# Build deps (alsa/cpal, libxdo/enigo, gtk3+appindicator/tray-icon, dbus/tao,
+# openssl/reqwest, cmake+cc for whisper-rs) plus kdotool/xdotool for per-app
+# profile detection.
 install_build_deps() {
   local pm
   pm="$(pkg_manager)"
@@ -63,6 +64,7 @@ install_build_deps() {
         cmake gcc gcc-c++ pkgconf-pkg-config \
         alsa-lib-devel libxdo-devel gtk3-devel \
         libayatana-appindicator-gtk3-devel \
+        dbus-devel openssl-devel \
         kdotool xdotool
       ;;
     apt)
@@ -71,6 +73,7 @@ install_build_deps() {
         cmake build-essential pkg-config \
         libasound2-dev libxdo-dev libgtk-3-dev \
         libayatana-appindicator3-dev \
+        libdbus-1-dev libssl-dev \
         xdotool
       echo "note: kdotool isn't packaged for apt-based distros yet;" >&2
       echo "      install it from https://github.com/jinliu/kdotool if you're on KDE Wayland" >&2
@@ -79,19 +82,22 @@ install_build_deps() {
       run sudo pacman -S --needed \
         cmake gcc pkgconf \
         alsa-lib libxdo gtk3 libayatana-appindicator \
+        dbus openssl \
         xdotool
       echo "note: kdotool may need an AUR helper (e.g. yay -S kdotool) on Arch" >&2
       ;;
     *)
       echo "no supported package manager found (looked for dnf, apt, pacman)" >&2
       echo "install manually: cmake, a C compiler, alsa-lib-devel, libxdo-devel," >&2
-      echo "gtk3-devel, libayatana-appindicator-gtk3-devel, and xdotool/kdotool" >&2
+      echo "gtk3-devel, libayatana-appindicator-gtk3-devel, dbus-devel, openssl-devel," >&2
+      echo "and xdotool/kdotool" >&2
       exit 1
       ;;
   esac
 }
 
-if ! command -v cmake >/dev/null 2>&1 || ! pkg-config --exists alsa 2>/dev/null; then
+if ! command -v cmake >/dev/null 2>&1 \
+  || ! pkg-config --exists alsa openssl dbus-1 2>/dev/null; then
   install_build_deps
 fi
 
@@ -100,7 +106,10 @@ if ! command -v rustc >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v ollama >/dev/null 2>&1; then
+# Ollama (LLM rewriting) is optional: without it Vox uses its built-in
+# cleanup, and the install stays ~60MB instead of several GB.
+WITH_LLM="${VOX_WITH_LLM:-0}"
+if [[ "${WITH_LLM}" == "1" ]] && ! command -v ollama >/dev/null 2>&1; then
   echo "installing Ollama…"
   run bash -c "curl -fsSL https://ollama.com/install.sh | sh"
 fi
@@ -121,6 +130,9 @@ else
 fi
 
 cd "${SRC}"
+# whisper-rs-sys ships pre-generated bindings; generating them with bindgen
+# breaks on newer distros' libclang (a malformed _IO_FILE) and needs libclang.
+export WHISPER_DONT_GENERATE_BINDINGS=1
 run cargo build --release --locked
 
 mkdir -p "${HOME}/.local/bin"
@@ -130,13 +142,15 @@ run chmod 755 "${HOME}/.local/bin/vox"
 # Stop any running tray before replacing it
 run bash -c "pkill -f '${HOME}/.local/bin/vox tray' 2>/dev/null || true"
 
-if [[ "${LOW_RAM}" == "1" ]]; then
-  echo "note: ${TOTAL_RAM_KB}KB total RAM detected; defaulting to the base Whisper model for a responsive experience (pass a size to download_model.sh yourself to override)"
-  run "${SRC}/scripts/download_model.sh" base
-else
-  run "${SRC}/scripts/download_model.sh" small
-fi
+# `vox download-model` also records the model in settings.yaml, so the
+# downloaded model and the configured one can never disagree. The quantized
+# base model is fast on any CPU; set VOX_WHISPER_MODEL=small-q5_1 for more
+# accuracy on machines with RAM to spare.
+WHISPER_MODEL="${VOX_WHISPER_MODEL:-base-q5_1}"
+run "${HOME}/.local/bin/vox" download-model "${WHISPER_MODEL}"
 
+MODEL="${VOX_MODEL:-llama3.2:latest}"
+if [[ "${WITH_LLM}" == "1" ]]; then
 # Start Ollama if needed
 if ! curl -sf --max-time 2 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
   if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files ollama.service >/dev/null 2>&1; then
@@ -170,6 +184,7 @@ fi
 MODEL="${VOX_MODEL}"
 PULL="${MODEL%:latest}"
 run ollama pull "${PULL}"
+fi
 
 DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/vox"
 run mkdir -p "${DATA_DIR}"
@@ -186,14 +201,15 @@ if [[ ! -f "${SETTINGS}" ]]; then
 auto_paste: true
 output_language: auto
 input_language: auto
-whisper_model: ${DATA_DIR}/models/ggml-small.bin
+whisper_model: ${DATA_DIR}/models/ggml-${WHISPER_MODEL}.bin
 llm_model: ${MODEL}
 custom_dictionary: []
 custom_aliases: {}
 hotkey:
   enabled: true
-  modifiers: [control, alt]
-  key: Space
+  modifiers: [control]
+  key: Period
+  mode: hybrid
 profiles:
   default:
     format: clean_prose

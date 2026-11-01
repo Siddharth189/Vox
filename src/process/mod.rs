@@ -1,9 +1,13 @@
+mod cleanup;
 mod dictionary;
+mod local;
 mod ollama;
 mod prompt;
 
+pub use cleanup::{Availability, CleanupProcessor};
 pub use dictionary::normalize_processed_text;
-pub use ollama::OllamaProcessor;
+pub use local::{clean_text, LocalCleanup};
+pub use ollama::{probe as probe_ollama, OllamaProcessor};
 pub use prompt::{
     code_switch_fewshot, effective_system_prompt, fewshot, rewrite_only_user_message,
 };

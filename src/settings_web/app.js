@@ -3,6 +3,7 @@
 const state = {
   settings: null,
   models: { whisper: [], ollama: [] },
+  devices: [],
 };
 
 async function api(path, opts = {}) {
@@ -39,24 +40,117 @@ function fillSelect(el, values, current) {
   if (current) el.value = current;
 }
 
+// Draft of the hotkey being edited; `key` is a KeyboardEvent.code name
+// ("Period", "KeyD", "Space"), which is exactly what the backend parses.
+const hotkeyDraft = { modifiers: ["control"], key: "Period" };
+
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const IS_WIN = /Win/.test(navigator.platform);
+const KEY_GLYPHS = {
+  Period: ".", Comma: ",", Slash: "/", Backslash: "\\", Semicolon: ";", Quote: "'",
+  Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+};
+
+function hotkeyLabel(mods, key) {
+  const names = { control: "Ctrl", alt: IS_MAC ? "Option" : "Alt", shift: "Shift", super: IS_MAC ? "Cmd" : IS_WIN ? "Win" : "Super" };
+  const parts = mods.map((m) => names[m] || m);
+  let k = KEY_GLYPHS[key] || key;
+  k = k.replace(/^Key/, "").replace(/^Digit/, "");
+  parts.push(k);
+  return parts.join(" + ");
+}
+
+function renderHotkey() {
+  document.getElementById("hotkey_capture").textContent = hotkeyLabel(hotkeyDraft.modifiers, hotkeyDraft.key);
+}
+
+function setupHotkeyCapture() {
+  const btn = document.getElementById("hotkey_capture");
+  const hint = document.getElementById("hotkey_hint");
+  const defaultHint = hint.textContent;
+  let listening = false;
+
+  const stop = (message) => {
+    listening = false;
+    btn.classList.remove("recording");
+    window.removeEventListener("keydown", onKey, true);
+    renderHotkey();
+    hint.textContent = message || defaultHint;
+  };
+
+  const onKey = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      stop();
+      return;
+    }
+    if (/^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/.test(e.code)) {
+      return; // wait for the non-modifier key
+    }
+    const mods = [];
+    if (e.ctrlKey) mods.push("control");
+    if (e.altKey) mods.push("alt");
+    if (e.shiftKey) mods.push("shift");
+    if (e.metaKey) mods.push("super");
+    if (!mods.some((m) => m !== "shift")) {
+      hint.textContent = `Include ${IS_MAC ? "Ctrl, Option, or Cmd" : "Ctrl, Alt, or Win"} so normal typing isn't captured.`;
+      return;
+    }
+    hotkeyDraft.modifiers = mods;
+    hotkeyDraft.key = e.code;
+    stop("Click Save to apply.");
+  };
+
+  btn.addEventListener("click", () => {
+    if (listening) {
+      stop();
+      return;
+    }
+    listening = true;
+    btn.classList.add("recording");
+    btn.textContent = "Press shortcut…";
+    hint.textContent = "Press the new shortcut, or Esc to keep the current one.";
+    window.addEventListener("keydown", onKey, true);
+  });
+}
+
 function applySettingsToForm(s) {
   document.getElementById("input_language").value = s.input_language || "auto";
   document.getElementById("output_language").value = s.output_language || "auto";
   document.getElementById("auto_paste").checked = !!s.auto_paste;
+  document.getElementById("llm_cleanup").checked = s.llm_cleanup !== false;
+  document.getElementById("sound_cues").checked = s.sound_cues !== false;
   document.getElementById("system_override").value = s.system_message_override || "";
   document.getElementById("hotkey_enabled").checked = !!(s.hotkey && s.hotkey.enabled);
-  document.getElementById("hotkey_modifiers").value = (s.hotkey?.modifiers || []).join(",");
-  document.getElementById("hotkey_key").value = s.hotkey?.key || "Space";
+  hotkeyDraft.modifiers = (s.hotkey?.modifiers || ["control"]).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
+  hotkeyDraft.key = s.hotkey?.key || "Period";
+  document.getElementById("hotkey_mode").value = s.hotkey?.mode || "hybrid";
+  renderHotkey();
   fillSelect(document.getElementById("whisper_model"), state.models.whisper, s.whisper_model);
   fillSelect(document.getElementById("llm_model"), state.models.ollama, s.llm_model);
+  fillDeviceSelect(s.input_device || "");
+}
+
+function fillDeviceSelect(current) {
+  const el = document.getElementById("input_device");
+  el.innerHTML = "";
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = "System default";
+  el.appendChild(def);
+  const names = [...state.devices];
+  if (current && !names.includes(current)) names.unshift(current);
+  for (const name of names) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = state.devices.includes(name) ? name : `${name} (not connected)`;
+    el.appendChild(opt);
+  }
+  el.value = current;
 }
 
 function readGeneralPatch() {
-  const mods = document
-    .getElementById("hotkey_modifiers")
-    .value.split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
   const override = document.getElementById("system_override").value.trim();
   return {
     input_language: document.getElementById("input_language").value.trim() || "auto",
@@ -64,10 +158,14 @@ function readGeneralPatch() {
     whisper_model: document.getElementById("whisper_model").value,
     llm_model: document.getElementById("llm_model").value,
     auto_paste: document.getElementById("auto_paste").checked,
+    llm_cleanup: document.getElementById("llm_cleanup").checked,
+    sound_cues: document.getElementById("sound_cues").checked,
+    input_device: document.getElementById("input_device").value || null,
     hotkey: {
       enabled: document.getElementById("hotkey_enabled").checked,
-      modifiers: mods,
-      key: document.getElementById("hotkey_key").value.trim() || "Space",
+      modifiers: hotkeyDraft.modifiers,
+      key: hotkeyDraft.key,
+      mode: document.getElementById("hotkey_mode").value,
     },
     custom_dictionary: state.settings.custom_dictionary || [],
     custom_aliases: state.settings.custom_aliases || {},
@@ -167,13 +265,16 @@ async function boot() {
   });
   setupSystemMessageControls();
   setupHistoryToggle();
+  setupHotkeyCapture();
 
-  const [settings, models] = await Promise.all([
+  const [settings, models, devices] = await Promise.all([
     api("/api/settings"),
     api("/api/models"),
+    api("/api/devices").catch(() => []),
   ]);
   state.settings = settings;
   state.models = models;
+  state.devices = devices || [];
   applySettingsToForm(settings);
 
   if (window.VoxDictionary) VoxDictionary.mount(document.getElementById("section-dictionary"), state);

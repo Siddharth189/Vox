@@ -2,7 +2,9 @@
 # download_model.sh - fetch a ggml whisper model into the Vox models dir.
 set -euo pipefail
 
-NAME="${1:-small}"
+# Prefer `vox download-model [NAME]` (works on every OS and also selects the
+# model in settings.yaml); this script remains for building without a binary.
+NAME="${1:-base-q5_1}"
 if [[ -z "${VOX_MODELS_DIR:-}" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
     VOX_MODELS_DIR="${HOME}/Library/Application Support/vox/models"

@@ -11,7 +11,10 @@ OUT_DIR="${VOX_APP_OUT:-${ROOT}/dist}"
 APP="${OUT_DIR}/${APP_NAME}.app"
 
 if [[ "${VOX_SKIP_BUILD:-0}" != "1" ]]; then
-  cargo build --release --locked
+  # The .app gets distributed: build for any Apple Silicon Mac, not just
+  # this one (see cmake/portable-cpu.cmake).
+  CMAKE_PROJECT_INCLUDE_BEFORE="${ROOT}/cmake/portable-cpu.cmake" \
+    cargo build --release --locked
 fi
 
 BIN="${ROOT}/target/release/vox"
@@ -32,7 +35,7 @@ EOF
 
 cat > "${APP}/Contents/Resources/README.txt" <<'EOF'
 Vox - local-first menu-bar voice dictation.
-Hold the global hotkey, speak, release. Text is transcribed and pasted locally.
+Press Ctrl+. and speak; press it again (or hold it while you talk). Text is transcribed and pasted locally.
 EOF
 
 cat > "${APP}/Contents/Info.plist" <<EOF

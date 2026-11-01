@@ -19,19 +19,23 @@ pub fn normalize_processed_text(
     normalize_sentence_spacing(&out)
 }
 
+/// Restores the space at sentence boundaries a model glued together
+/// ("It is running.We will ship.").
+///
+/// Only a lowercase letter (or closing bracket/quote) before the mark and a
+/// capital after it counts as a boundary. Anything looser corrupts what
+/// people dictate into editors and terminals: "node.js", "example.com",
+/// "localhost:8080", "3:00", "v2.5", "U.S.A.".
 pub fn normalize_sentence_spacing(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     for i in 0..chars.len() {
         out.push(chars[i]);
-        if matches!(chars[i], '.' | '!' | '?' | ':' | ';') {
+        if matches!(chars[i], '.' | '!' | '?') {
             if let Some(next) = chars.get(i + 1) {
-                // Skip numeric literals like "3:00", "12.5", "1:1" - a digit
-                // on both sides means this punctuation isn't a sentence
-                // boundary at all, so inserting a space would corrupt it.
-                let prev_digit = i > 0 && chars[i - 1].is_ascii_digit();
-                let next_digit = next.is_ascii_digit();
-                if next.is_alphanumeric() && !(prev_digit && next_digit) {
+                let prev_is_word_end = i > 0
+                    && (chars[i - 1].is_lowercase() || matches!(chars[i - 1], ')' | '"' | '\''));
+                if prev_is_word_end && next.is_uppercase() {
                     out.push(' ');
                 }
             }
@@ -171,7 +175,28 @@ mod tests {
             normalize_sentence_spacing("Ship version 2.5 today.Then 2.6 next week."),
             "Ship version 2.5 today. Then 2.6 next week."
         );
-        assert_eq!(normalize_sentence_spacing("Mix it 1:1 with water."), "Mix it 1:1 with water.");
+        assert_eq!(
+            normalize_sentence_spacing("Mix it 1:1 with water."),
+            "Mix it 1:1 with water."
+        );
+    }
+
+    #[test]
+    fn sentence_spacing_preserves_code_hosts_and_abbreviations() {
+        for s in [
+            "Install node.js first.",
+            "Open example.com/docs in a tab.",
+            "The server runs on localhost:8080 now.",
+            "Use std::vec::Vec here.",
+            "Shipped to the U.S.A. last week.",
+            "Bump it to v2.5.1 tonight.",
+        ] {
+            assert_eq!(normalize_sentence_spacing(s), s);
+        }
+        assert_eq!(
+            normalize_sentence_spacing("Done!Next item."),
+            "Done! Next item."
+        );
     }
 
     #[test]
