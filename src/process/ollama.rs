@@ -212,7 +212,11 @@ pub fn probe(host: &str, model: &str) -> bool {
         })
 }
 
-fn build_request_body(model: &str, messages: &[ChatMessage], num_predict: usize) -> serde_json::Value {
+fn build_request_body(
+    model: &str,
+    messages: &[ChatMessage],
+    num_predict: usize,
+) -> serde_json::Value {
     json!({
         "model": model,
         "messages": messages,
@@ -290,7 +294,10 @@ fn strip_fenced_code(text: &str) -> Option<String> {
     let without = without.trim();
     // Drop optional first-line language tag
     let body = if let Some((first, rest)) = without.split_once('\n') {
-        if first.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-') {
+        if first
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+        {
             rest.trim()
         } else {
             without
@@ -403,10 +410,7 @@ mod tests {
             post_process_model_output("Here's a rewritten version:\nHello there."),
             "Hello there."
         );
-        assert_eq!(
-            post_process_model_output("```\nHello\n```"),
-            "Hello"
-        );
+        assert_eq!(post_process_model_output("```\nHello\n```"), "Hello");
         assert_eq!(
             post_process_model_output("Here is the deal: we ship Friday"),
             "Here is the deal: we ship Friday"
@@ -418,7 +422,9 @@ mod tests {
         // Reproduced against a real 1B-class model in practice: it
         // regularly prefaces with "I'll ..." instead of "Here is/Here's".
         assert_eq!(
-            post_process_model_output("I'll provide the corrected text:\nCan you review PR #684 after lunch?"),
+            post_process_model_output(
+                "I'll provide the corrected text:\nCan you review PR #684 after lunch?"
+            ),
             "Can you review PR #684 after lunch?"
         );
         assert_eq!(

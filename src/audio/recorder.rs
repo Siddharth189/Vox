@@ -60,9 +60,10 @@ pub fn resolve_input_device(preferred: Option<&str>) -> Option<cpal::Device> {
                 .iter()
                 .position(|d| d.name().is_ok_and(|n| n == want));
             let partial = || {
-                devices
-                    .iter()
-                    .position(|d| d.name().is_ok_and(|n| n.to_lowercase().contains(&want_lower)))
+                devices.iter().position(|d| {
+                    d.name()
+                        .is_ok_and(|n| n.to_lowercase().contains(&want_lower))
+                })
             };
             if let Some(i) = exact.or_else(partial) {
                 return devices.into_iter().nth(i);
@@ -123,11 +124,21 @@ impl Recorder {
         let stream_config: StreamConfig = config.clone().into();
 
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, buffer, channels, max_samples)?,
-            SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, buffer, channels, max_samples)?,
-            SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, buffer, channels, max_samples)?,
-            SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, buffer, channels, max_samples)?,
-            SampleFormat::U8 => build_stream::<u8>(&device, &stream_config, buffer, channels, max_samples)?,
+            SampleFormat::F32 => {
+                build_stream::<f32>(&device, &stream_config, buffer, channels, max_samples)?
+            }
+            SampleFormat::I16 => {
+                build_stream::<i16>(&device, &stream_config, buffer, channels, max_samples)?
+            }
+            SampleFormat::U16 => {
+                build_stream::<u16>(&device, &stream_config, buffer, channels, max_samples)?
+            }
+            SampleFormat::I32 => {
+                build_stream::<i32>(&device, &stream_config, buffer, channels, max_samples)?
+            }
+            SampleFormat::U8 => {
+                build_stream::<u8>(&device, &stream_config, buffer, channels, max_samples)?
+            }
             other => {
                 return Err(VoxError::Audio(format!(
                     "unsupported sample format: {other:?}"
@@ -135,9 +146,7 @@ impl Recorder {
             }
         };
 
-        stream
-            .play()
-            .map_err(|e| VoxError::Audio(e.to_string()))?;
+        stream.play().map_err(|e| VoxError::Audio(e.to_string()))?;
         self.stream = Some(stream);
         self.started_at = Some(Instant::now());
         Ok(())
@@ -177,9 +186,7 @@ pub fn finish_capture(samples: &[f32], rate: u32) -> AudioChunk {
 }
 
 fn lock_buffer(buffer: &Arc<Mutex<Vec<f32>>>) -> std::sync::MutexGuard<'_, Vec<f32>> {
-    buffer
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    buffer.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 pub(crate) trait SampleToF32: cpal::SizedSample + Copy {
@@ -238,9 +245,11 @@ where
                 if buf.len() >= max_samples {
                     return;
                 }
-                buf.extend(data.chunks(channels).map(|frame| {
-                    frame.iter().map(|s| s.to_f32()).sum::<f32>() / channels as f32
-                }));
+                buf.extend(
+                    data.chunks(channels).map(|frame| {
+                        frame.iter().map(|s| s.to_f32()).sum::<f32>() / channels as f32
+                    }),
+                );
             },
             err_fn,
             None,

@@ -195,11 +195,7 @@ mod tests {
 
     struct CountingTranscriber(Arc<AtomicUsize>);
     impl Transcriber for CountingTranscriber {
-        fn transcribe(
-            &self,
-            _: &AudioChunk,
-            _: &AppContext,
-        ) -> Result<crate::model::Transcript> {
+        fn transcribe(&self, _: &AudioChunk, _: &AppContext) -> Result<crate::model::Transcript> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(crate::model::Transcript::new("x"))
         }

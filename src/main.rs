@@ -119,9 +119,7 @@ fn reexec_as_tray() -> Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(VoxError::Other(format!(
-            "tray exited with {status}"
-        )))
+        Err(VoxError::Other(format!("tray exited with {status}")))
     }
 }
 
@@ -193,7 +191,11 @@ fn cmd_demo(args: &[String]) -> Result<()> {
     let processor = cleanup_processor(&settings)?;
     println!(
         "cleanup: {}",
-        if processor.llm_active() { "ollama" } else { "local rules" }
+        if processor.llm_active() {
+            "ollama"
+        } else {
+            "local rules"
+        }
     );
 
     let pipeline = Pipeline::new(
@@ -219,7 +221,10 @@ fn cmd_demo(args: &[String]) -> Result<()> {
         println!("model:{m}");
     }
     println!("final:{}", report.prepared.processed_text);
-    println!("inject:{} ({})", report.injection.strategy, report.injection.injected_chars);
+    println!(
+        "inject:{} ({})",
+        report.injection.strategy, report.injection.injected_chars
+    );
     vox::inject::wait_for_clipboard_restore(&report.injection.strategy);
     Ok(())
 }
@@ -388,7 +393,8 @@ fn cmd_download_model(args: &[String]) -> Result<()> {
         }
         return Ok(());
     }
-    let name = positional_text(args).unwrap_or_else(|| vox::config::DEFAULT_WHISPER_MODEL_NAME.into());
+    let name =
+        positional_text(args).unwrap_or_else(|| vox::config::DEFAULT_WHISPER_MODEL_NAME.into());
     let path = download_with_progress(&name)?;
 
     let mut settings = Settings::load();
@@ -461,15 +467,19 @@ fn cmd_autostart(args: &[String]) -> Result<()> {
         }
         _ => println!(
             "launch at login: {}",
-            if vox::autostart::is_enabled() { "on" } else { "off" }
+            if vox::autostart::is_enabled() {
+                "on"
+            } else {
+                "off"
+            }
         ),
     }
     Ok(())
 }
 
 fn cmd_inject_test(args: &[String]) -> Result<()> {
-    let text = positional_text(args)
-        .ok_or_else(|| VoxError::Other("inject-test requires text".into()))?;
+    let text =
+        positional_text(args).ok_or_else(|| VoxError::Other("inject-test requires text".into()))?;
     let app = flag_value(args, "--app").unwrap_or_else(|| "unknown".into());
     let settings = Settings::load();
     let ctx = AppContext {

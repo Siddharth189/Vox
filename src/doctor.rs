@@ -127,7 +127,10 @@ pub fn run(settings: &Settings) -> DoctorReport {
         checks.push(Check {
             name: "arch".into(),
             status: CheckStatus::Warn,
-            message: format!("architecture {} (Apple Silicon recommended)", std::env::consts::ARCH),
+            message: format!(
+                "architecture {} (Apple Silicon recommended)",
+                std::env::consts::ARCH
+            ),
             fix: None,
         });
     }
@@ -192,7 +195,8 @@ pub fn run(settings: &Settings) -> DoctorReport {
             checks.push(Check {
                 name: "toolchain".into(),
                 status: CheckStatus::Info,
-                message: "Xcode Command Line Tools not found (only needed to build from source)".into(),
+                message: "Xcode Command Line Tools not found (only needed to build from source)"
+                    .into(),
                 fix: Some("xcode-select --install".into()),
             });
         }
@@ -380,7 +384,8 @@ pub fn run(settings: &Settings) -> DoctorReport {
             checks.push(Check {
                 name: "input_session".into(),
                 status: CheckStatus::Warn,
-                message: "no DISPLAY or WAYLAND_DISPLAY set; auto-paste needs a graphical session".into(),
+                message: "no DISPLAY or WAYLAND_DISPLAY set; auto-paste needs a graphical session"
+                    .into(),
                 fix: None,
             });
         }
@@ -434,7 +439,8 @@ fn microphone_check(preferred: Option<&str>) -> Check {
 
 fn mic_privacy_hint() -> String {
     if cfg!(windows) {
-        "plug in a mic, and allow desktop apps under Settings > Privacy & security > Microphone".into()
+        "plug in a mic, and allow desktop apps under Settings > Privacy & security > Microphone"
+            .into()
     } else if cfg!(target_os = "macos") {
         "System Settings > Privacy & Security > Microphone".into()
     } else {
@@ -475,7 +481,9 @@ fn linux_app_detection_check() -> Check {
         return Check {
             name: "app_detection".into(),
             status: CheckStatus::Warn,
-            message: "X11 session but xdotool is missing; every dictation will use the default profile".into(),
+            message:
+                "X11 session but xdotool is missing; every dictation will use the default profile"
+                    .into(),
             fix: Some(install_hint("xdotool")),
         };
     }
@@ -562,8 +570,7 @@ const LARGE_MODEL_THRESHOLD_BYTES: u64 = 1_500_000_000;
 #[cfg(not(target_os = "macos"))]
 fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
     let base_message = format!("ollama reachable; model {model} present");
-    let (Some(model_bytes), Some(total_ram_bytes)) =
-        (model_size_bytes, config::total_ram_bytes())
+    let (Some(model_bytes), Some(total_ram_bytes)) = (model_size_bytes, config::total_ram_bytes())
     else {
         return Check {
             name: "ollama".into(),
@@ -573,7 +580,9 @@ fn ollama_model_fit_check(model: &str, model_size_bytes: Option<u64>) -> Check {
         };
     };
 
-    if total_ram_bytes < config::LOW_RAM_THRESHOLD_BYTES && model_bytes > LARGE_MODEL_THRESHOLD_BYTES {
+    if total_ram_bytes < config::LOW_RAM_THRESHOLD_BYTES
+        && model_bytes > LARGE_MODEL_THRESHOLD_BYTES
+    {
         Check {
             name: "ollama".into(),
             status: CheckStatus::Warn,
@@ -598,9 +607,7 @@ pub fn model_matches(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    let strip = |s: &str| -> String {
-        s.strip_suffix(":latest").unwrap_or(s).to_string()
-    };
+    let strip = |s: &str| -> String { s.strip_suffix(":latest").unwrap_or(s).to_string() };
     strip(a) == strip(b)
 }
 

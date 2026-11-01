@@ -96,7 +96,9 @@ fn kdotool_active_window() -> Option<ActiveWindow> {
     }
     Some(ActiveWindow {
         class,
-        title: title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
+        title: title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
     })
 }
 
@@ -114,7 +116,9 @@ fn xdotool_active_window() -> Option<ActiveWindow> {
     }
     Some(ActiveWindow {
         class,
-        title: title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
+        title: title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
     })
 }
 

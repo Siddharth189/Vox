@@ -8,8 +8,7 @@ pub struct ClipboardInjector;
 
 impl TextInjector for ClipboardInjector {
     fn inject(&self, text: &str, _ctx: &AppContext) -> Result<InjectionResult> {
-        let mut clipboard =
-            Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
+        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
         clipboard
             .set_text(text.to_string())
             .map_err(|e| VoxError::Injection(e.to_string()))?;

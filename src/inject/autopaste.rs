@@ -83,8 +83,7 @@ impl SavedClipboard {
 
 impl TextInjector for AutoPasteInjector {
     fn inject(&self, text: &str, ctx: &AppContext) -> Result<InjectionResult> {
-        let mut clipboard =
-            Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
+        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
         let previous = SavedClipboard::capture(&mut clipboard);
 
         set_clipboard_text(&mut clipboard, text)?;

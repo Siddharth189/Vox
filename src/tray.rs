@@ -90,7 +90,10 @@ fn init_logging() {
 
     let path = config::log_path();
     // Keep the log from growing forever across months of use.
-    if std::fs::metadata(&path).map(|m| m.len() > 5_000_000).unwrap_or(false) {
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 5_000_000)
+        .unwrap_or(false)
+    {
         let _ = std::fs::remove_file(&path);
     }
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -168,8 +171,8 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
         });
     }
 
-    let hotkey_manager = GlobalHotKeyManager::new()
-        .map_err(|e| VoxError::Other(format!("hotkey manager: {e}")))?;
+    let hotkey_manager =
+        GlobalHotKeyManager::new().map_err(|e| VoxError::Other(format!("hotkey manager: {e}")))?;
     let mut current_hotkey: Option<HotKey> = None;
     let mut hotkey_error: Option<String> = None;
     if settings.hotkey.enabled {
@@ -192,19 +195,26 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
         None,
     );
     let settings_item = MenuItem::new("Settings...", true, None);
-    let autostart_item = CheckMenuItem::new("Launch at login", true, crate::autostart::is_enabled(), None);
+    let autostart_item = CheckMenuItem::new(
+        "Launch at login",
+        true,
+        crate::autostart::is_enabled(),
+        None,
+    );
     let accessibility_item = MenuItem::new("Open Accessibility Settings...", true, None);
     let quit_item = MenuItem::new("Quit Vox", true, None);
     let menu_err = |e: tray_icon::menu::Error| VoxError::Other(e.to_string());
     menu.append(&status_item).map_err(menu_err)?;
     menu.append(&hotkey_hint).map_err(menu_err)?;
-    menu.append(&PredefinedMenuItem::separator()).map_err(menu_err)?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(menu_err)?;
     menu.append(&settings_item).map_err(menu_err)?;
     menu.append(&autostart_item).map_err(menu_err)?;
     if cfg!(target_os = "macos") {
         menu.append(&accessibility_item).map_err(menu_err)?;
     }
-    menu.append(&PredefinedMenuItem::separator()).map_err(menu_err)?;
+    menu.append(&PredefinedMenuItem::separator())
+        .map_err(menu_err)?;
     menu.append(&quit_item).map_err(menu_err)?;
 
     let icons = TrayIcons::new();
@@ -246,7 +256,8 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
         }
     }
 
-    let mut last_polled_mtime: Option<SystemTime> = config::settings_mtime(&config::settings_path());
+    let mut last_polled_mtime: Option<SystemTime> =
+        config::settings_mtime(&config::settings_path());
     let mut processing = 0usize;
     let mut status = if downloading {
         "Vox: downloading speech model...".to_string()
@@ -385,7 +396,11 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                                 if settings.sound_cues {
                                     cue::play(Cue::Start);
                                 }
-                                register_cancel(&hotkey_manager, &cancel_hotkey, &mut cancel_registered);
+                                register_cancel(
+                                    &hotkey_manager,
+                                    &cancel_hotkey,
+                                    &mut cancel_registered,
+                                );
                                 set_look(&tray, &icons, Look::Recording);
                                 status = format!(
                                     "Vox: listening... ({} to finish, Esc to cancel)",
@@ -571,11 +586,11 @@ fn periodic(
     pipeline: &Option<Arc<Pipeline>>,
 ) {
     // Safety net for a lost key-up: never record past the cap.
-    if recorder
-        .elapsed()
-        .is_some_and(|e| e >= MAX_RECORDING)
-    {
-        tracing::warn!("recording hit the {}s cap; finishing", MAX_RECORDING.as_secs());
+    if recorder.elapsed().is_some_and(|e| e >= MAX_RECORDING) {
+        tracing::warn!(
+            "recording hit the {}s cap; finishing",
+            MAX_RECORDING.as_secs()
+        );
         ptt.reset();
         finish_recording(
             recorder,
@@ -630,7 +645,10 @@ fn periodic(
         if model.exists() {
             spawn_pipeline_build(proxy, new_settings.clone(), model);
         } else {
-            tracing::warn!("whisper model {} not found; keeping the current one", model.display());
+            tracing::warn!(
+                "whisper model {} not found; keeping the current one",
+                model.display()
+            );
         }
         *pipeline_settings = new_settings.clone();
     }
@@ -745,7 +763,10 @@ fn spawn_pipeline_build(proxy: &EventLoopProxy<UserEvent>, settings: Settings, m
 
 fn ready_status(settings: &Settings) -> String {
     if settings.hotkey.enabled {
-        format!("Vox: ready - press {} to dictate", hk::display_label(&settings.hotkey))
+        format!(
+            "Vox: ready - press {} to dictate",
+            hk::display_label(&settings.hotkey)
+        )
     } else {
         "Vox: ready (hotkey disabled)".into()
     }
@@ -851,7 +872,7 @@ fn make_tray_icon(rgb: [u8; 3]) -> Icon {
 
     // 4 vertical capsules of varying height/position
     let bars = [
-        (6.0f32, 22.0, 8.0),  // x-center, height, y-center
+        (6.0f32, 22.0, 8.0), // x-center, height, y-center
         (12.0, 28.0, 8.0),
         (18.0, 18.0, 8.0),
         (24.0, 24.0, 8.0),

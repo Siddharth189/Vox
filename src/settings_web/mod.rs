@@ -15,7 +15,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
-use crate::config::{self, HotkeyConfig, ProfileConfig, Settings, is_blocked_llm_model};
+use crate::config::{self, is_blocked_llm_model, HotkeyConfig, ProfileConfig, Settings};
 use crate::history::{self, CorrectionRequest, DictationRecord};
 use crate::model::{AppProfile, Mode};
 use crate::process::effective_system_prompt;
@@ -110,11 +110,17 @@ fn origin_allowed(origin: Option<&str>) -> bool {
 /// point of view, sends no Origin header on GETs, and could otherwise read
 /// /api/history (every dictation) and /api/settings.
 async fn same_origin(req: Request<Body>, next: Next) -> Response {
-    let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok());
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok());
     if !host_allowed(host) {
         return (StatusCode::FORBIDDEN, "forbidden host").into_response();
     }
-    let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
     if !origin_allowed(origin) {
         return (StatusCode::FORBIDDEN, "forbidden origin").into_response();
     }
@@ -164,9 +170,7 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
         settings.sound_cues = v;
     }
     settings.output_language = patch.output_language;
-    settings.input_language = patch
-        .input_language
-        .unwrap_or_else(|| "auto".into());
+    settings.input_language = patch.input_language.unwrap_or_else(|| "auto".into());
     settings.whisper_model = patch.whisper_model;
     settings.llm_model = patch.llm_model;
     settings.auto_paste = patch.auto_paste;
@@ -281,7 +285,11 @@ fn list_ollama_models() -> Vec<String> {
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .filter_map(|m| {
+                    m.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
                 .filter(|n| !is_blocked_llm_model(n))
                 .collect()
         })

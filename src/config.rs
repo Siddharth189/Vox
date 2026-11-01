@@ -37,7 +37,10 @@ fn platform_data_dir() -> PathBuf {
     match std::env::var_os("LOCALAPPDATA") {
         Some(local) if !local.is_empty() => PathBuf::from(local).join("Vox"),
         _ => match std::env::var_os("USERPROFILE") {
-            Some(home) => PathBuf::from(home).join("AppData").join("Local").join("Vox"),
+            Some(home) => PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("Vox"),
             None => PathBuf::from("."),
         },
     }
@@ -135,7 +138,10 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            modifiers: DEFAULT_HOTKEY_MODIFIERS.iter().map(|m| m.to_string()).collect(),
+            modifiers: DEFAULT_HOTKEY_MODIFIERS
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
             key: DEFAULT_HOTKEY_KEY.into(),
             mode: HotkeyMode::Hybrid,
         }
@@ -430,8 +436,16 @@ impl Settings {
             let has_primary = self.hotkey.modifiers.iter().any(|m| {
                 matches!(
                     m.to_ascii_lowercase().as_str(),
-                    "control" | "ctrl" | "alt" | "option" | "super" | "cmd" | "command" | "win"
-                        | "windows" | "meta"
+                    "control"
+                        | "ctrl"
+                        | "alt"
+                        | "option"
+                        | "super"
+                        | "cmd"
+                        | "command"
+                        | "win"
+                        | "windows"
+                        | "meta"
                 )
             });
             if self.hotkey.modifiers.is_empty() || !has_primary {
@@ -456,7 +470,10 @@ impl Settings {
                     settings
                 }
                 Err(err) => {
-                    eprintln!("warning: failed to parse settings ({}): {err}; using defaults", path.display());
+                    eprintln!(
+                        "warning: failed to parse settings ({}): {err}; using defaults",
+                        path.display()
+                    );
                     Self::with_defaults()
                 }
             },
@@ -466,7 +483,10 @@ impl Settings {
                 settings
             }
             Err(err) => {
-                eprintln!("warning: failed to read settings ({}): {err}; using defaults", path.display());
+                eprintln!(
+                    "warning: failed to read settings ({}): {err}; using defaults",
+                    path.display()
+                );
                 Self::with_defaults()
             }
         }
@@ -480,8 +500,8 @@ impl Settings {
         if let Some(parent) = path.parent() {
             secure_fs::ensure_private_dir(parent)?;
         }
-        let yaml = serde_yaml::to_string(&sanitized)
-            .map_err(|e| VoxError::Config(e.to_string()))?;
+        let yaml =
+            serde_yaml::to_string(&sanitized).map_err(|e| VoxError::Config(e.to_string()))?;
         secure_fs::write_private_file(&path, yaml)?;
         Ok(())
     }
@@ -611,7 +631,10 @@ profiles:
         s.sanitize();
         let yaml = s.to_yaml().unwrap();
         let (_again, migrated) = Settings::from_yaml_checked(&yaml).unwrap();
-        assert!(!migrated, "canonical settings with aliases must not report migration");
+        assert!(
+            !migrated,
+            "canonical settings with aliases must not report migration"
+        );
     }
 
     #[test]

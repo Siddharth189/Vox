@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
 
 use crate::audio::{self, TARGET_RATE};
 use crate::error::{Result, VoxError};
@@ -329,7 +331,10 @@ mod tests {
     fn language_codes() {
         assert_eq!(whisper_language_code("English"), Some("en"));
         assert_eq!(whisper_language_code("auto"), None);
-        assert_eq!(whisper_language_code("Hinglish / mixed Hindi-English"), None);
+        assert_eq!(
+            whisper_language_code("Hinglish / mixed Hindi-English"),
+            None
+        );
     }
 
     #[test]

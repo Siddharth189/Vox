@@ -83,8 +83,7 @@ pub fn save_history(records: &[DictationRecord]) -> Result<()> {
         let skip = sorted.len() - HISTORY_LIMIT;
         sorted = sorted.split_off(skip);
     }
-    let json = serde_json::to_string_pretty(&sorted)
-        .map_err(|e| VoxError::Other(e.to_string()))?;
+    let json = serde_json::to_string_pretty(&sorted).map_err(|e| VoxError::Other(e.to_string()))?;
     secure_fs::write_private_file(&path, json)?;
     Ok(())
 }

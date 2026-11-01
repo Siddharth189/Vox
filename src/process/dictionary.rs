@@ -175,7 +175,10 @@ mod tests {
             normalize_sentence_spacing("Ship version 2.5 today.Then 2.6 next week."),
             "Ship version 2.5 today. Then 2.6 next week."
         );
-        assert_eq!(normalize_sentence_spacing("Mix it 1:1 with water."), "Mix it 1:1 with water.");
+        assert_eq!(
+            normalize_sentence_spacing("Mix it 1:1 with water."),
+            "Mix it 1:1 with water."
+        );
     }
 
     #[test]
@@ -190,7 +193,10 @@ mod tests {
         ] {
             assert_eq!(normalize_sentence_spacing(s), s);
         }
-        assert_eq!(normalize_sentence_spacing("Done!Next item."), "Done! Next item.");
+        assert_eq!(
+            normalize_sentence_spacing("Done!Next item."),
+            "Done! Next item."
+        );
     }
 
     #[test]

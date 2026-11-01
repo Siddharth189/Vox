@@ -129,7 +129,10 @@ impl ProcessedText {
         }
     }
 
-    pub fn with_model_text(final_text: impl Into<String>, raw_model_output: impl Into<String>) -> Self {
+    pub fn with_model_text(
+        final_text: impl Into<String>,
+        raw_model_output: impl Into<String>,
+    ) -> Self {
         Self {
             text: final_text.into(),
             model_text: Some(raw_model_output.into()),
