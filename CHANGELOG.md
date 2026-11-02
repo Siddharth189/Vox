@@ -6,8 +6,12 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
 ### Added
 
+- **Prebuilt downloads.** Every release now ships ready-to-run packages for Windows, macOS
+  (Apple Silicon), and Linux, with SHA-256 checksums. No Rust toolchain needed.
 - **Voice commands.** Say "new line", "new paragraph", or "scratch that" as its own phrase.
   Vox ignores them when they're part of a sentence and never inserts line breaks into a
   terminal. Toggle with `voice_commands`.
@@ -35,3 +39,6 @@ All notable changes to Vox are listed here. The format follows
 
 - First release: macOS tray dictation with local Whisper, Ollama cleanup, per-app profiles,
   custom dictionary, and the local settings page.
+
+[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Siddharth189/Vox/releases/tag/v0.3.0

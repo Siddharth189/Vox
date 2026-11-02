@@ -1,0 +1,169 @@
+name: Release
+
+# Push a tag that matches Cargo.toml's version (e.g. v0.3.0) to build all
+# three platforms and publish a GitHub Release with that version's
+# CHANGELOG.md section as the notes. See CONTRIBUTING.md, "Cutting a release".
+# Run it by hand from the Actions tab to build the packages without
+# publishing anything (they're attached to the run as artifacts).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Distributed binaries: build for a portable CPU baseline, not the
+  # runner's CPU (see cmake/portable-cpu.cmake).
+  CMAKE_PROJECT_INCLUDE_BEFORE: ${{ github.workspace }}/cmake/portable-cpu.cmake
+
+jobs:
+  check:
+    name: check tag and changelog
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} doesn't match Cargo.toml version ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          version='${{ steps.version.outputs.version }}'
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## [${version}]' section"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "Vox-${{ needs.check.outputs.version }}-windows-x86_64"
+          New-Item -ItemType Directory -Force $name | Out-Null
+          Copy-Item target\release\vox.exe, target\release\vox-tray.exe, scripts\install-windows.ps1, scripts\uninstall-windows.ps1, LICENSE $name\
+          Compress-Archive -Path $name\* -DestinationPath "$name.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Vox-*-windows-x86_64.zip
+
+  macos:
+    needs: check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure cmake is available
+        run: command -v cmake || brew install cmake
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      # Ad-hoc signed, not notarized: first launch needs right-click > Open
+      # (README covers this).
+      - name: Package
+        run: |
+          VOX_SKIP_BUILD=1 scripts/package_app.sh
+          ditto -c -k --keepParent dist/Vox.app "Vox-${{ needs.check.outputs.version }}-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: Vox-*-macos-arm64.zip
+
+  linux:
+    needs: check
+    # Pinned rather than -latest: the binary links against this image's
+    # glibc and GTK, which sets the oldest distro it runs on.
+    runs-on: ubuntu-24.04
+    env:
+      WHISPER_DONT_GENERATE_BINDINGS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same build deps as ci.yml's linux job.
+      - name: Install native dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake build-essential pkg-config \
+            libasound2-dev \
+            libxdo-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libdbus-1-dev \
+            libssl-dev
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          name="Vox-${{ needs.check.outputs.version }}-linux-x86_64"
+          mkdir "$name"
+          cp target/release/vox LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: Vox-*-linux-x86_64.tar.gz
+
+  publish:
+    needs: [check, windows, macos, linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum Vox-* > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Vox ${{ needs.check.outputs.version }}
+          body_path: dist/notes.md
+          files: |
+            dist/Vox-*
+            dist/SHA256SUMS.txt

@@ -5,6 +5,7 @@
 **Private voice dictation for macOS, Windows, and Linux. Press a key, speak, and polished text lands at your cursor. Nothing leaves your machine.**
 
 [![CI](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml/badge.svg)](https://github.com/Siddharth189/Vox/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Siddharth189/Vox)](https://github.com/Siddharth189/Vox/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)
 ![Rust](https://img.shields.io/badge/rust-1.89%2B-orange)
@@ -43,6 +44,28 @@ reaches the cursor **under a second** after you stop talking.
 
 ## Install
 
+### Download
+
+Grab the file for your system from the
+**[latest release](https://github.com/Siddharth189/Vox/releases/latest)**. No Rust or build tools
+needed. Vox downloads its speech model the first time it starts.
+
+| System | File | Then |
+|---|---|---|
+| Windows 10/11 | `Vox-<version>-windows-x86_64.zip` | Unzip, then run `powershell -ExecutionPolicy Bypass -File install-windows.ps1 -BinDir .` in that folder |
+| macOS 13+, Apple Silicon | `Vox-<version>-macos-arm64.zip` | Unzip, move `Vox.app` to Applications, and open it (see below) |
+| Linux x86_64 | `Vox-<version>-linux-x86_64.tar.gz` | Extract, copy `vox` to `~/.local/bin`, and run `vox tray` |
+
+- **macOS:** the app isn't notarized yet, so the first launch is blocked. Open it once, then
+  choose **Open Anyway** in System Settings → Privacy & Security, or run
+  `xattr -dr com.apple.quarantine /Applications/Vox.app`. Intel Macs: install from source below.
+- **Linux:** built on Ubuntu 24.04. It needs GTK 3, libayatana-appindicator, libxdo, and ALSA at
+  runtime, which most desktops already have. On older distros, or if it doesn't start, use
+  `install-linux.sh` below.
+- Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
+
+Or install from source with the script for your system:
+
 ### Windows 10/11
 
 ```powershell
@@ -52,9 +75,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 ```
 
 This builds Vox, installs it for your user (no admin needed), adds a **Vox** Start-menu entry,
-downloads the speech model, turns on launch at login, and starts the tray. Prefer a prebuilt
-binary? Every CI run on `main` produces `Vox-windows-x86_64.zip`: unzip it and run
-`install-windows.ps1 -BinDir .` from that folder.
+downloads the speech model, turns on launch at login, and starts the tray.
 
 ### macOS 13+
 

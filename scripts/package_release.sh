@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${VOX_APP_OUT:-${ROOT}/dist}"
 APP="${OUT_DIR}/Vox.app"
-VERSION="${VOX_VERSION:-0.1.0}"
+VERSION="${VOX_VERSION:-$(grep -m1 '^version' "${ROOT}/Cargo.toml" | cut -d'"' -f2)}"
 
 if [[ ! -d "${APP}" ]]; then
   "${ROOT}/scripts/package_app.sh"
