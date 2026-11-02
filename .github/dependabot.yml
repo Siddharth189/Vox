@@ -1,0 +1,12 @@
+# Keeps the workflows' actions current, so a runtime deprecation (like
+# Node 20's) arrives as a PR instead of a CI warning. Cargo dependencies
+# aren't included: whisper-rs bumps need testing on real hardware.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
