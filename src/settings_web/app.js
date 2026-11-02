@@ -1,4 +1,4 @@
-/* global VoxDictionary, VoxProfiles, VoxHistory */
+/* global VoxDictionary, VoxProfiles, VoxHistory, VoxSnippets */
 
 const state = {
   settings: null,
@@ -121,6 +121,9 @@ function applySettingsToForm(s) {
   document.getElementById("auto_paste").checked = !!s.auto_paste;
   document.getElementById("llm_cleanup").checked = s.llm_cleanup !== false;
   document.getElementById("sound_cues").checked = s.sound_cues !== false;
+  document.getElementById("voice_commands").checked = s.voice_commands !== false;
+  document.getElementById("llm_provider").value = s.llm_provider || "ollama";
+  document.getElementById("llm_base_url").value = s.llm_base_url || "";
   document.getElementById("system_override").value = s.system_message_override || "";
   document.getElementById("hotkey_enabled").checked = !!(s.hotkey && s.hotkey.enabled);
   hotkeyDraft.modifiers = (s.hotkey?.modifiers || ["control"]).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
@@ -160,6 +163,9 @@ function readGeneralPatch() {
     auto_paste: document.getElementById("auto_paste").checked,
     llm_cleanup: document.getElementById("llm_cleanup").checked,
     sound_cues: document.getElementById("sound_cues").checked,
+    voice_commands: document.getElementById("voice_commands").checked,
+    llm_provider: document.getElementById("llm_provider").value,
+    llm_base_url: document.getElementById("llm_base_url").value.trim() || null,
     input_device: document.getElementById("input_device").value || null,
     hotkey: {
       enabled: document.getElementById("hotkey_enabled").checked,
@@ -258,6 +264,20 @@ function setupHistoryToggle() {
   });
 }
 
+function formatMinutes(min) {
+  if (min >= 90) return `${(min / 60).toFixed(1)} h`;
+  return `${Math.round(min)} min`;
+}
+
+async function loadStats() {
+  const s = await api("/api/stats");
+  document.getElementById("stat_words").textContent = s.words.toLocaleString();
+  document.getElementById("stat_saved").textContent = formatMinutes(s.time_saved_minutes);
+  document.getElementById("stat_saved_label").textContent = `saved vs typing at ${s.typing_wpm_baseline} wpm`;
+  document.getElementById("stat_wpm").textContent = s.words_per_minute ? Math.round(s.words_per_minute) : "–";
+  document.getElementById("stat_streak").textContent = s.streak_days;
+}
+
 async function boot() {
   document.getElementById("save_general").addEventListener("click", saveGeneral);
   ["input_language", "output_language", "system_override"].forEach((id) => {
@@ -279,6 +299,8 @@ async function boot() {
 
   if (window.VoxDictionary) VoxDictionary.mount(document.getElementById("section-dictionary"), state);
   if (window.VoxProfiles) VoxProfiles.mount(document.getElementById("section-profiles"), state);
+  if (window.VoxSnippets) VoxSnippets.mount(document.getElementById("section-snippets"), state);
+  loadStats().catch(() => {});
 
   await refreshSystemPreview();
 }

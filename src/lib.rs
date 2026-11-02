@@ -17,6 +17,7 @@ pub mod privacy;
 pub mod process;
 pub mod secure_fs;
 pub mod settings_web;
+pub mod stats;
 pub mod stt;
 pub mod tray;
 pub mod util;

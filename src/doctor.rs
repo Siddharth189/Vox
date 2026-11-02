@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::config::{self, Settings};
+use crate::config::{self, LlmProvider, Settings};
 #[cfg(target_os = "macos")]
 use crate::permissions;
 
@@ -256,7 +256,7 @@ pub fn run(settings: &Settings) -> DoctorReport {
             f.read_exact(&mut magic)?;
             Ok(magic)
         }) {
-            Ok(magic) if magic == [0x6c, 0x6d, 0x67, 0x67] => checks.push(Check {
+            Ok([0x6c, 0x6d, 0x67, 0x67]) => checks.push(Check {
                 name: "whisper_model".into(),
                 status: CheckStatus::Pass,
                 message: format!("valid ggml model at {}", model_path.display()),
@@ -286,8 +286,58 @@ pub fn run(settings: &Settings) -> DoctorReport {
             message: "LLM cleanup off; using built-in cleanup".into(),
             fix: None,
         });
+    } else if !crate::process::llm_url_permitted(&settings.llm_base_url()) {
+        checks.push(Check {
+            name: "llm".into(),
+            status: CheckStatus::Warn,
+            message: format!(
+                "LLM server {} is not on this machine, so Vox won't send dictations to it; using built-in cleanup",
+                settings.llm_base_url()
+            ),
+            fix: Some(
+                "point llm_base_url at a local server, or set VOX_ALLOW_REMOTE_LLM=1 to allow it".into(),
+            ),
+        });
+    } else if settings.llm_provider == LlmProvider::OpenaiCompatible {
+        let host = settings.llm_base_url();
+        checks.push(
+            match crate::process::list_models(LlmProvider::OpenaiCompatible, &host) {
+                None => Check {
+                    name: "llm".into(),
+                    status: CheckStatus::Info,
+                    message: format!(
+                        "no OpenAI-compatible server answering at {host}; using built-in cleanup"
+                    ),
+                    fix: Some(
+                        "start the server (LM Studio: Developer > Start Server; llama.cpp: llama-server -m model.gguf --port 8080)"
+                            .into(),
+                    ),
+                },
+                Some(names) if names.iter().any(|n| model_matches(n, &settings.llm_model)) => {
+                    Check {
+                        name: "llm".into(),
+                        status: CheckStatus::Pass,
+                        message: format!("{host} reachable; model {} available", settings.llm_model),
+                        fix: None,
+                    }
+                }
+                Some(names) => Check {
+                    name: "llm".into(),
+                    status: CheckStatus::Warn,
+                    message: format!(
+                        "{host} is running but doesn't offer model {}; using built-in cleanup",
+                        settings.llm_model
+                    ),
+                    fix: Some(if names.is_empty() {
+                        "load a model in the server".into()
+                    } else {
+                        format!("set llm_model to one of: {}", names.join(", "))
+                    }),
+                },
+            },
+        );
     } else {
-        match check_ollama(&settings.llm_model) {
+        match check_ollama(&settings.llm_base_url(), &settings.llm_model) {
             OllamaCheck::Ok { model_size_bytes } => {
                 checks.push(ollama_model_fit_check(&settings.llm_model, model_size_bytes));
             }
@@ -503,7 +553,7 @@ enum OllamaCheck {
     MissingModel,
 }
 
-fn check_ollama(model: &str) -> OllamaCheck {
+fn check_ollama(host: &str, model: &str) -> OllamaCheck {
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -511,7 +561,8 @@ fn check_ollama(model: &str) -> OllamaCheck {
         Ok(c) => c,
         Err(_) => return OllamaCheck::Unreachable,
     };
-    let resp = match client.get("http://127.0.0.1:11434/api/tags").send() {
+    let url = format!("{}/api/tags", host.trim_end_matches('/'));
+    let resp = match client.get(url).send() {
         Ok(r) if r.status().is_success() => r,
         _ => return OllamaCheck::Unreachable,
     };

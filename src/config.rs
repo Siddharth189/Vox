@@ -148,6 +148,46 @@ impl Default for HotkeyConfig {
     }
 }
 
+/// Which local LLM server polishes dictations when `llm_cleanup` is on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProvider {
+    /// Ollama's native API (`/api/chat`).
+    #[default]
+    Ollama,
+    /// Any server speaking the OpenAI chat-completions API: LM Studio,
+    /// llama.cpp's `llama-server`, Jan, vLLM, LocalAI...
+    OpenaiCompatible,
+}
+
+impl LlmProvider {
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            LlmProvider::Ollama => "http://127.0.0.1:11434",
+            // LM Studio's default; llama-server users usually set :8080.
+            LlmProvider::OpenaiCompatible => "http://127.0.0.1:1234",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LlmProvider::Ollama => "Ollama",
+            LlmProvider::OpenaiCompatible => "OpenAI-compatible server",
+        }
+    }
+}
+
+/// A voice shortcut: saying `trigger` inserts `text` verbatim (an email
+/// signature, an address, a link) instead of the spoken words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Snippet {
+    pub trigger: String,
+    pub text: String,
+}
+
+pub const MAX_SNIPPETS: usize = 100;
+const MAX_SNIPPET_CHARS: usize = 4000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProfileConfig {
     #[serde(default)]
@@ -198,6 +238,18 @@ pub struct Settings {
     /// name that isn't connected right now, means the system default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_device: Option<String>,
+    /// Local LLM server API. Ollama by default.
+    #[serde(default)]
+    pub llm_provider: LlmProvider,
+    /// Server address; None means the provider's default local port. Must be
+    /// a loopback address unless VOX_ALLOW_REMOTE_LLM=1 is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_base_url: Option<String>,
+    /// Spoken "new line", "new paragraph", and "scratch that".
+    #[serde(default = "default_true")]
+    pub voice_commands: bool,
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
     pub profiles: HashMap<String, ProfileConfig>,
 }
 
@@ -354,8 +406,20 @@ impl Settings {
             llm_cleanup: true,
             sound_cues: true,
             input_device: None,
+            llm_provider: LlmProvider::Ollama,
+            llm_base_url: None,
+            voice_commands: true,
+            snippets: Vec::new(),
             profiles,
         }
+    }
+
+    /// The LLM server address actually used: the configured one, or the
+    /// provider's default local port.
+    pub fn llm_base_url(&self) -> String {
+        self.llm_base_url
+            .clone()
+            .unwrap_or_else(|| self.llm_provider.default_base_url().to_string())
     }
 
     /// Profile for an app id (bundle ID, WM_CLASS, or exe name). Exact match
@@ -414,6 +478,18 @@ impl Settings {
 
         self.custom_dictionary = sanitize_dictionary(&self.custom_dictionary);
         self.custom_aliases = sanitize_aliases(&self.custom_aliases);
+        self.snippets = sanitize_snippets(&self.snippets);
+
+        if let Some(url) = self.llm_base_url.as_deref() {
+            let trimmed = url.trim().trim_end_matches('/');
+            self.llm_base_url = if trimmed.is_empty() {
+                None
+            } else if trimmed != url {
+                Some(trimmed.to_string())
+            } else {
+                self.llm_base_url.take()
+            };
+        }
 
         if self
             .input_device
@@ -575,6 +651,47 @@ fn sanitize_aliases(aliases: &HashMap<String, Vec<String>>) -> HashMap<String, V
     out
 }
 
+/// Lowercased alphanumeric core of each word: how triggers are compared
+/// against speech, so "My email." matches the trigger "my email".
+pub fn trigger_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn sanitize_snippets(snippets: &[Snippet]) -> Vec<Snippet> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for snippet in snippets {
+        let trigger = sanitize_string(&snippet.trigger);
+        let words = trigger_words(&trigger);
+        // Snippet text keeps its line breaks and tabs: signatures and
+        // addresses are multi-line.
+        let text: String = snippet
+            .text
+            .replace("\r\n", "\n")
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .take(MAX_SNIPPET_CHARS)
+            .collect();
+        let text = text.trim().to_string();
+        if words.is_empty() || text.is_empty() || !seen.insert(words) {
+            continue;
+        }
+        out.push(Snippet { trigger, text });
+        if out.len() >= MAX_SNIPPETS {
+            break;
+        }
+    }
+    out
+}
+
 pub fn settings_mtime(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -702,6 +819,76 @@ profiles:
         assert_eq!(s.profile_for("WINDOWSTERMINAL").format, Format::Shell);
         assert_eq!(s.profile_for("keepassxc").privacy, Privacy::Disabled);
         assert_eq!(s.profile_for("notepad").format, Format::CleanProse);
+    }
+
+    #[test]
+    fn snippets_are_cleaned_and_deduplicated() {
+        let mut s = Settings::with_defaults();
+        s.snippets = vec![
+            Snippet {
+                trigger: "  My   Email ".into(),
+                text: "me@example.com".into(),
+            },
+            // same trigger words once punctuation and case are ignored
+            Snippet {
+                trigger: "my email.".into(),
+                text: "other@example.com".into(),
+            },
+            Snippet {
+                trigger: "sig".into(),
+                text: "Thanks,\r\nSam\u{7}".into(),
+            },
+            Snippet {
+                trigger: "...".into(),
+                text: "no words in the trigger".into(),
+            },
+            Snippet {
+                trigger: "empty".into(),
+                text: "   ".into(),
+            },
+        ];
+        s.sanitize();
+        assert_eq!(
+            s.snippets,
+            vec![
+                Snippet {
+                    trigger: "My Email".into(),
+                    text: "me@example.com".into(),
+                },
+                Snippet {
+                    trigger: "sig".into(),
+                    text: "Thanks,\nSam".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn llm_base_url_defaults_per_provider_and_is_trimmed() {
+        let mut s = Settings::with_defaults();
+        assert_eq!(s.llm_base_url(), "http://127.0.0.1:11434");
+        s.llm_provider = LlmProvider::OpenaiCompatible;
+        assert_eq!(s.llm_base_url(), "http://127.0.0.1:1234");
+        s.llm_base_url = Some(" http://localhost:8080/v1/ ".into());
+        s.sanitize();
+        assert_eq!(s.llm_base_url.as_deref(), Some("http://localhost:8080/v1"));
+        s.llm_base_url = Some("  ".into());
+        s.sanitize();
+        assert_eq!(s.llm_base_url, None);
+    }
+
+    #[test]
+    fn settings_without_new_features_get_their_defaults() {
+        let yaml = r#"
+profiles:
+  default:
+    format: clean_prose
+"#;
+        let s = Settings::from_yaml(yaml).unwrap();
+        assert!(s.voice_commands);
+        assert!(s.snippets.is_empty());
+        assert_eq!(s.llm_provider, LlmProvider::Ollama);
+        assert_eq!(s.llm_base_url, None);
     }
 
     #[test]

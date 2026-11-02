@@ -15,7 +15,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
-use crate::config::{self, is_blocked_llm_model, HotkeyConfig, ProfileConfig, Settings};
+use crate::config::{
+    self, is_blocked_llm_model, HotkeyConfig, LlmProvider, ProfileConfig, Settings, Snippet,
+};
 use crate::history::{self, CorrectionRequest, DictationRecord};
 use crate::model::{AppProfile, Mode};
 use crate::process::effective_system_prompt;
@@ -27,6 +29,7 @@ const INDEX_HTML: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const DICTIONARY_JS: &str = include_str!("dictionary.js");
 const PROFILES_JS: &str = include_str!("profiles.js");
+const SNIPPETS_JS: &str = include_str!("snippets.js");
 const HISTORY_JS: &str = include_str!("history.js");
 
 pub fn start_background() {
@@ -56,12 +59,15 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/app.js", get(|| async { js(APP_JS) }))
         .route("/dictionary.js", get(|| async { js(DICTIONARY_JS) }))
         .route("/profiles.js", get(|| async { js(PROFILES_JS) }))
+        .route("/snippets.js", get(|| async { js(SNIPPETS_JS) }))
         .route("/history.js", get(|| async { js(HISTORY_JS) }))
         .route("/api/settings", get(get_settings).post(post_settings))
         .route("/api/models", get(get_models))
         .route("/api/devices", get(get_devices))
         .route("/api/history", get(get_history))
         .route("/api/history/clear", post(clear_history))
+        .route("/api/stats", get(get_stats))
+        .route("/api/stats/reset", post(reset_stats))
         .route("/api/diagnostics/last", get(diagnostics_last))
         .route("/api/learn-correction", post(learn_correction))
         .route(
@@ -157,6 +163,15 @@ pub struct SettingsPatch {
     /// Absent: unchanged. `null`: system default. A name: that microphone.
     #[serde(default)]
     pub input_device: Option<Option<String>>,
+    #[serde(default)]
+    pub llm_provider: Option<LlmProvider>,
+    /// Absent: unchanged. `null`: the provider's default local port.
+    #[serde(default)]
+    pub llm_base_url: Option<Option<String>>,
+    #[serde(default)]
+    pub voice_commands: Option<bool>,
+    #[serde(default)]
+    pub snippets: Option<Vec<Snippet>>,
 }
 
 fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
@@ -165,6 +180,18 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.llm_cleanup {
         settings.llm_cleanup = v;
+    }
+    if let Some(v) = patch.llm_provider {
+        settings.llm_provider = v;
+    }
+    if let Some(v) = patch.llm_base_url {
+        settings.llm_base_url = v;
+    }
+    if let Some(v) = patch.voice_commands {
+        settings.voice_commands = v;
+    }
+    if let Some(v) = patch.snippets {
+        settings.snippets = v;
     }
     if let Some(v) = patch.sound_cues {
         settings.sound_cues = v;
@@ -266,34 +293,15 @@ fn list_whisper_models() -> Vec<String> {
     found
 }
 
+/// Models offered by the configured LLM server (Ollama or OpenAI-compatible).
 fn list_ollama_models() -> Vec<String> {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let Ok(resp) = client.get("http://127.0.0.1:11434/api/tags").send() else {
-        return Vec::new();
-    };
-    let Ok(body) = resp.json::<serde_json::Value>() else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = body
-        .get("models")
-        .and_then(|m| m.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    m.get("name")
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                })
-                .filter(|n| !is_blocked_llm_model(n))
-                .collect()
-        })
-        .unwrap_or_default();
+    let settings = Settings::load();
+    let mut names: Vec<String> =
+        crate::process::list_models(settings.llm_provider, &settings.llm_base_url())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| !is_blocked_llm_model(n))
+            .collect();
     names.sort();
     names
 }
@@ -306,6 +314,17 @@ async fn get_history() -> Json<Vec<DictationRecord>> {
 
 async fn clear_history() -> StatusCode {
     match history::clear_history() {
+        Ok(()) => StatusCode::OK,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn get_stats() -> Json<crate::stats::StatsSummary> {
+    Json(crate::stats::load().summary(history::now_ms()))
+}
+
+async fn reset_stats() -> StatusCode {
+    match crate::stats::reset() {
         Ok(()) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }

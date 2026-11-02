@@ -13,7 +13,7 @@ use vox::inject::{AutoPasteInjector, ClipboardInjector, TextInjector};
 use vox::model::{AppContext, AudioChunk, EnrichedRequest, Mode, Transcript};
 use vox::permissions;
 use vox::pipeline::Pipeline;
-use vox::process::{CleanupProcessor, OllamaProcessor, TextProcessor};
+use vox::process::{CleanupProcessor, OllamaProcessor, TextProcessor, VoiceCommands};
 use vox::stt::{FakeTranscriber, LocalWhisper, Transcriber};
 
 fn main() {
@@ -54,6 +54,7 @@ fn real_main() -> Result<()> {
         "download-model" => cmd_download_model(&args),
         "setup" => cmd_setup(&args),
         "autostart" => cmd_autostart(&args),
+        "stats" => cmd_stats(&args),
         "devices" => {
             let settings = Settings::load();
             for name in vox::audio::input_device_names() {
@@ -98,7 +99,8 @@ Usage:
   vox demo [--app APP_ID] [--dry-run] [--input LANG] [--lang LANG] [--llm MODEL] \"text\"
   vox inject-test [--app APP_ID] \"text\"
   vox autostart [on|off|status]    launch the tray at login
-  vox check                        quick Ollama (optional LLM cleanup) check",
+  vox stats [--json|--reset]       words dictated and typing time saved
+  vox check                        quick LLM server (optional cleanup) check",
         env!("CARGO_PKG_VERSION"),
         vox::config::DEFAULT_WHISPER_MODEL_NAME
     );
@@ -133,14 +135,47 @@ fn cmd_check() -> Result<()> {
     };
     match processor.process(&req) {
         Ok(p) => {
-            println!("ollama ok - model replied:");
+            println!("{} ok - model replied:", settings.llm_provider.label());
             println!("{}", p.text);
             Ok(())
         }
         Err(e) => Err(VoxError::Other(format!(
-            "ollama check failed: {e} (optional: without Ollama, Vox uses its built-in cleanup)"
+            "LLM check failed: {e} (optional: without an LLM server, Vox uses its built-in cleanup)"
         ))),
     }
+}
+
+fn cmd_stats(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| a == "--reset") {
+        vox::stats::reset()?;
+        println!("usage stats reset");
+        return Ok(());
+    }
+    let summary = vox::stats::load().summary(vox::history::now_ms());
+    if args.iter().any(|a| a == "--json") {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+    if summary.dictations == 0 {
+        println!("No dictations yet. Press Ctrl+. in any text field and start talking.");
+        return Ok(());
+    }
+    println!("dictations      {}", summary.dictations);
+    println!("words           {}", summary.words);
+    println!(
+        "speaking time   {:.1} min ({} wpm)",
+        summary.speaking_minutes, summary.words_per_minute
+    );
+    println!(
+        "time saved      {:.1} min vs typing at {} wpm",
+        summary.time_saved_minutes, summary.typing_wpm_baseline
+    );
+    println!(
+        "today / 7 days  {} / {} words",
+        summary.words_today, summary.words_last_7_days
+    );
+    println!("streak          {} day(s)", summary.streak_days);
+    Ok(())
 }
 
 fn cmd_doctor(json: bool) -> Result<()> {
@@ -192,7 +227,7 @@ fn cmd_demo(args: &[String]) -> Result<()> {
     println!(
         "cleanup: {}",
         if processor.llm_active() {
-            "ollama"
+            settings.llm_provider.label()
         } else {
             "local rules"
         }
@@ -209,7 +244,11 @@ fn cmd_demo(args: &[String]) -> Result<()> {
         } else {
             Box::new(ClipboardInjector)
         },
-    );
+    )
+    .with_commands(VoiceCommands::new(
+        settings.voice_commands,
+        &settings.snippets,
+    ));
 
     let audio = AudioChunk {
         samples: vec![],

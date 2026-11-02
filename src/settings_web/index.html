@@ -207,9 +207,20 @@
     .stage-text { margin-top: 0.4rem; font-size: 0.78rem; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
     .hotkey-capture { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width: 9rem; text-align: center; cursor: pointer; }
     .hotkey-capture.recording { border-color: var(--accent); color: var(--accent); }
+    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; }
+    .stat-tile { background: var(--input-bg); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 0.9rem; min-width: 0; }
+    .stat-value { font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+    .stat-label { color: var(--muted); font-size: 0.78rem; margin-top: 0.1rem; }
+    .snippet-row { display: grid; grid-template-columns: minmax(0, 12rem) auto minmax(0, 1fr) auto; gap: 0.6rem; align-items: start; padding: 0.55rem 0; border-top: 1px solid var(--border); }
+    .snippet-row:first-child { border-top: none; }
+    .snippet-text { white-space: pre-wrap; font-size: 0.85rem; overflow-wrap: anywhere; }
+    .snippet-new { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto; gap: 0.6rem; align-items: start; margin-top: 0.75rem; }
+    .snippet-new textarea { min-height: 2.4rem; height: 2.4rem; font-family: inherit; }
     @media (max-width: 720px) {
       .history-layout { grid-template-columns: 1fr; }
-      .latency-row, .stage-row { grid-template-columns: 1fr 1fr; }
+      .latency-row, .stage-row, .stats-row { grid-template-columns: 1fr 1fr; }
+      .snippet-row, .snippet-new { grid-template-columns: 1fr; }
+      .snippet-row .dict-arrow { display: none; }
     }
   </style>
 </head>
@@ -222,6 +233,16 @@
     <button class="primary" id="save_general">Save</button>
   </header>
   <main>
+    <section class="section" id="section-stats">
+      <div class="section-label">Your dictation</div>
+      <div class="stats-row">
+        <div class="stat-tile"><div class="stat-value" id="stat_words">0</div><div class="stat-label">words dictated</div></div>
+        <div class="stat-tile"><div class="stat-value" id="stat_saved">0 min</div><div class="stat-label" id="stat_saved_label">saved vs typing</div></div>
+        <div class="stat-tile"><div class="stat-value" id="stat_wpm">&ndash;</div><div class="stat-label">words per minute</div></div>
+        <div class="stat-tile"><div class="stat-value" id="stat_streak">0</div><div class="stat-label">day streak</div></div>
+      </div>
+    </section>
+
     <section class="section" id="section-language">
       <div class="section-label">Language</div>
       <div class="field-row">
@@ -275,13 +296,26 @@
       <div class="field-row">
         <div class="field-info">
           <div class="field-title">Polish with a local LLM</div>
-          <div class="field-desc">Uses Ollama when it's running for rewriting and translation. Without it, Vox uses fast built-in cleanup.</div>
+          <div class="field-desc">Uses a local LLM server when it's running, for rewriting and translation. Without one, Vox uses fast built-in cleanup.</div>
         </div>
         <div class="field-control" style="text-align:right">
           <label class="switch">
             <input id="llm_cleanup" type="checkbox" />
             <span class="track"></span>
           </label>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">LLM server</div>
+          <div class="field-desc">Ollama, or any OpenAI-compatible server (LM Studio, llama.cpp, Jan, vLLM). Must run on this machine.</div>
+        </div>
+        <div class="field-control">
+          <select id="llm_provider">
+            <option value="ollama">Ollama</option>
+            <option value="openai_compatible">OpenAI-compatible</option>
+          </select>
+          <input id="llm_base_url" type="text" placeholder="default local port" style="margin-top:0.4rem" />
         </div>
       </div>
       <div class="field-row">
@@ -342,6 +376,18 @@
       </div>
       <div class="field-row">
         <div class="field-info">
+          <div class="field-title">Voice commands</div>
+          <div class="field-desc">Say &ldquo;new line&rdquo;, &ldquo;new paragraph&rdquo;, or &ldquo;scratch that&rdquo; as its own phrase, with a short pause before it.</div>
+        </div>
+        <div class="field-control" style="text-align:right">
+          <label class="switch">
+            <input id="voice_commands" type="checkbox" />
+            <span class="track"></span>
+          </label>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
           <div class="field-title">Sound cues</div>
           <div class="field-desc">A short chirp when listening starts and stops.</div>
         </div>
@@ -363,6 +409,18 @@
         <button class="link" id="dict_add_term">+ Add term</button>
         <span class="status" id="dict_status"></span>
       </div>
+    </section>
+
+    <section class="section" id="section-snippets">
+      <div class="section-label">Snippets</div>
+      <div class="field-desc" style="margin-bottom:0.75rem">Say the trigger phrase while dictating and Vox types the text exactly as written: signatures, addresses, links.</div>
+      <div id="snippet_list"></div>
+      <div class="snippet-new">
+        <input id="new_snippet_trigger" type="text" placeholder="Trigger, e.g. my email" />
+        <textarea id="new_snippet_text" placeholder="Text to insert"></textarea>
+        <button class="ghost" id="add_snippet">Add</button>
+      </div>
+      <span class="status" id="snippet_status"></span>
     </section>
 
     <section class="section" id="section-system-message">
@@ -404,6 +462,7 @@
   <script src="/app.js"></script>
   <script src="/dictionary.js"></script>
   <script src="/profiles.js"></script>
+  <script src="/snippets.js"></script>
   <script src="/history.js"></script>
 </body>
 </html>
