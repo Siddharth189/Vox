@@ -9,6 +9,7 @@ BUNDLE_ID="${VOX_BUNDLE_ID:-com.siddharth.vox}"
 APP_NAME="Vox"
 OUT_DIR="${VOX_APP_OUT:-${ROOT}/dist}"
 APP="${OUT_DIR}/${APP_NAME}.app"
+VERSION="${VOX_VERSION:-$(grep -m1 '^version' "${ROOT}/Cargo.toml" | cut -d'"' -f2)}"
 
 if [[ "${VOX_SKIP_BUILD:-0}" != "1" ]]; then
   # The .app gets distributed: build for any Apple Silicon Mac, not just
@@ -52,9 +53,9 @@ cat > "${APP}/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>

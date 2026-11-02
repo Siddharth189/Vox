@@ -125,6 +125,19 @@ calls during transcription.
 Use the imperative mood and describe the user-visible effect: "Fix paste hanging after the second
 dictation on KDE", not "update autopaste.rs".
 
+## Cutting a release
+
+Maintainers only. Releases are built by `.github/workflows/release.yml`.
+
+1. On `main`, set `version` in `Cargo.toml` and run `cargo check` to update `Cargo.lock`.
+2. In `CHANGELOG.md`, rename "Unreleased" to `[X.Y.Z] - YYYY-MM-DD`, add a fresh empty
+   "Unreleased" above it, and update the compare links at the bottom.
+3. Merge that, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+The workflow refuses a tag that doesn't match `Cargo.toml` or has no changelog section. It builds
+Windows, macOS (Apple Silicon), and Linux packages and publishes a GitHub Release with the
+changelog section as its notes. Check the Actions tab if the release doesn't appear.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
