@@ -64,8 +64,33 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
+      # Compile whisper.cpp/ggml with clang-cl, not MSVC's cl: the MSVC build
+      # transcribes ~6x slower (8s clip on an i7-1185G7: 40s, vs 6s from a
+      # GCC build with the same portable CPU flags), which is also why
+      # llama.cpp ships clang-built Windows binaries. CMake only honors CC/CXX
+      # with the Ninja generator, which needs the MSVC environment (vcvars)
+      # exported explicitly; VS ships Ninja and the runner ships LLVM.
+      - name: Use clang-cl for whisper.cpp
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^(Path|INCLUDE|LIB|LIBPATH|VCToolsInstallDir|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" >> $env:GITHUB_ENV
+            }
+          }
+          "CC=clang-cl" >> $env:GITHUB_ENV
+          "CXX=clang-cl" >> $env:GITHUB_ENV
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+
       - name: cargo build --release
         run: cargo build --release --locked
+
+      - name: Check whisper.cpp was built with clang-cl
+        shell: bash
+        run: |
+          grep -h '^CMAKE_C_COMPILER:' target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | tee cc.txt
+          grep -qi clang cc.txt
 
       - name: Package
         shell: pwsh
