@@ -133,15 +133,14 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Cache cargo registry & build artifacts
-        uses: Swatinem/rust-cache@v2
-
       # Compile whisper.cpp/ggml with clang-cl, not MSVC's cl: the MSVC build
       # transcribes ~6x slower (8s clip on an i7-1185G7: 40s, vs 6s from a
       # GCC build with the same portable CPU flags), which is also why
       # llama.cpp ships clang-built Windows binaries. CMake only honors CC/CXX
       # with the Ninja generator, which needs the MSVC environment (vcvars)
-      # exported explicitly; VS ships Ninja and the runner ships LLVM.
+      # exported explicitly; VS ships Ninja and the runner ships LLVM. Runs before
+      # rust-cache so CC/CXX/CMAKE_GENERATOR are part of the cache key: an
+      # MSVC-built whisper.cpp from an older cache must never be reused.
       - name: Use clang-cl for whisper.cpp
         shell: pwsh
         run: |
@@ -157,6 +156,9 @@ jobs:
 
       # The runner image ships MSVC, CMake, and LLVM (libclang for bindgen),
       # which is everything whisper-rs needs.
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: cargo clippy
         continue-on-error: true
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -178,6 +180,12 @@ jobs:
       - name: Check whisper.cpp was built with clang-cl
         shell: bash
         run: |
+          # A cache hit restores whisper.cpp prebuilt and without its CMake
+          # build dir; the cache key includes CC=clang-cl, so that's fine.
+          if ! ls target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt >/dev/null 2>&1; then
+            echo "::notice::whisper.cpp restored from cache (key includes CC=clang-cl)"
+            exit 0
+          fi
           grep -h '^CMAKE_C_COMPILER:' target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | tee cc.txt
           grep -qi clang cc.txt
 
