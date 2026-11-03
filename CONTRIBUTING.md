@@ -48,6 +48,7 @@ cargo run -- demo --dry-run "hi sam, new paragraph. um, ship it friday"
 
 # Speech-to-text accuracy and speed on a recording:
 cargo run --release -- transcribe clip.wav --repeat 3
+scripts/bench.sh target/release/vox   # the CI speed check: fails above 1.0x real time
 
 # Paste on its own:
 cargo run -- inject-test "hello from vox"

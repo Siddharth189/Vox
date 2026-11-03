@@ -22,6 +22,7 @@ use crate::hotkey::{self as hk, PttAction, PushToTalk};
 use crate::model::{elapsed_ms, InjectionResult, Mode, Privacy};
 use crate::permissions;
 use crate::pipeline::{build_live_pipeline, Pipeline, PreparedReport};
+use crate::speed;
 use crate::stats;
 
 enum UserEvent {
@@ -513,6 +514,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     latency: latency.clone(),
                     corrected_text: None,
                 };
+                let slow = speed::check(&latency, &history::load_history());
                 if let Err(e) = history::append_record(record) {
                     tracing::warn!("history append failed: {e}");
                 }
@@ -531,7 +533,19 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     latency.total_ms
                 );
 
-                status = status_for_strategy(&injection.strategy).to_string();
+                status = match slow {
+                    Some(ref slow) => {
+                        let on_battery = speed::on_battery();
+                        tracing::warn!(
+                            "slow transcription: {} ({}ms for {}ms of audio, on_battery={on_battery:?})",
+                            speed::describe(slow.factor),
+                            slow.transcribe_ms,
+                            slow.audio_ms
+                        );
+                        speed::status_text(slow, on_battery)
+                    }
+                    None => status_for_strategy(&injection.strategy).to_string(),
+                };
                 set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
                 set_status(&tray, &status_item, &status);
             }

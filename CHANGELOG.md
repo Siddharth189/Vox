@@ -6,6 +6,19 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Slow-dictation warning.** When a dictation takes longer than you spoke, and much longer
+  than usual on your machine, the tray says so and why when it can tell ("on battery: plug in
+  for full speed").
+- **Speed in history and `vox doctor`.** Each dictation shows how fast it ran relative to your
+  speech, and `vox doctor` reports the median and how to fix a slow machine.
+- **Smarter correction learning.** Corrections are compared word by word, so a split or merged
+  word ("voxand" to "Vox and") no longer throws off the rest. Vox suggests new names and jargon
+  from your fix for the dictionary, and learns multi-word mishearings ("visual studio coat").
+- **Speed benchmark in CI and releases** (`scripts/bench.sh`): Windows and Linux builds fail if
+  Whisper runs slower than real time.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

@@ -105,8 +105,8 @@ support varies by compositor; read [Linux notes](docs/PLATFORMS.md#linux) before
 vox doctor
 ```
 
-`vox doctor` checks the microphone, hotkey, speech model, optional LLM server, and permissions,
-and prints the exact fix for anything that's missing.
+`vox doctor` checks the microphone, hotkey, speech model, transcription speed, optional LLM
+server, and permissions, and prints the exact fix for anything that's missing.
 
 <details>
 <summary>Installer options, building from source, and uninstalling</summary>
@@ -157,8 +157,9 @@ cargo build --release --locked
 
 - **Custom dictionary.** Teach Vox product names, people, and jargon. Misheard spellings map
   back to your canonical form, and multi-word terms get alias variants automatically.
-- **Learns from corrections.** Fix a past dictation in the history view, and Vox learns the
-  misspelling as an alias.
+- **Learns from corrections.** Fix a past dictation in the history view. Vox remembers what
+  it misheard ("cube cuddle" becomes "kubectl") and suggests the new names you typed for your
+  dictionary, which Whisper is then primed with, so it hears them right next time.
 - **Smart cleanup without an LLM.** Removes "um" and "uh" without touching real words, fixes
   spacing and capitalization, and respects the app's format. Adds no noticeable delay.
 - **Optional LLM polish.** With a local model running, Vox fixes grammar, expands spoken forms
