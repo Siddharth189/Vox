@@ -64,6 +64,11 @@ jobs:
       # libclang on newer distros (Ubuntu 26) emits a broken _IO_FILE that
       # fails its own layout assertion. Also drops the libclang build dep.
       WHISPER_DONT_GENERATE_BINDINGS: "1"
+      # Portable CPU baseline, like the release build. A native build cached
+      # from one runner crashed with SIGILL (exit 132) on another runner's
+      # CPU once the speed benchmark started actually running Whisper. Also
+      # part of rust-cache's key (CMAKE_*), so native caches aren't reused.
+      CMAKE_PROJECT_INCLUDE_BEFORE: ${{ github.workspace }}/cmake/portable-cpu.cmake
     steps:
       - uses: actions/checkout@v7
 
