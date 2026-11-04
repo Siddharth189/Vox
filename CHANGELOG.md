@@ -6,6 +6,8 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-04
+
 ### Added
 
 - **Slow-dictation warning.** When a dictation takes longer than you spoke, and much longer
@@ -53,5 +55,6 @@ All notable changes to Vox are listed here. The format follows
 - First release: macOS tray dictation with local Whisper, Ollama cleanup, per-app profiles,
   custom dictionary, and the local settings page.
 
-[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Siddharth189/Vox/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Siddharth189/Vox/releases/tag/v0.3.0
