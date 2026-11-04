@@ -6,8 +6,10 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::config::{self, LlmProvider, Settings};
+use crate::history::DictationRecord;
 #[cfg(target_os = "macos")]
 use crate::permissions;
+use crate::speed;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -276,6 +278,12 @@ pub fn run(settings: &Settings) -> DoctorReport {
             }),
         }
     }
+
+    // 7b. How fast Whisper has actually been running here.
+    checks.push(speed_check(
+        &crate::history::load_history(),
+        speed::on_battery(),
+    ));
 
     // 8. Optional LLM cleanup via Ollama. Never a failure: without it Vox
     // uses its built-in rule-based cleanup.
@@ -712,4 +720,76 @@ fn ollama_start_hint() -> String {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn ollama_start_hint() -> String {
     "ollama serve  # or: systemctl --user start ollama, if you set that up".into()
+}
+
+/// Median speed of recent dictations. Slower than real time makes every
+/// dictation feel broken, and the cause is usually the machine's state
+/// (battery, a busy CPU) or the model size, which this names.
+fn speed_check(records: &[DictationRecord], on_battery: Option<bool>) -> Check {
+    let factors = speed::recent_factors(records, 20);
+    let Some(median) = speed::median(&factors) else {
+        return Check {
+            name: "speed".into(),
+            status: CheckStatus::Info,
+            message: "no timed dictations yet; dictate a sentence or two and run this again".into(),
+            fix: None,
+        };
+    };
+    let mut message = format!(
+        "Whisper runs {} (median of the last {} dictations)",
+        speed::describe(median),
+        factors.len()
+    );
+    if median < speed::SLOW_FACTOR {
+        return Check {
+            name: "speed".into(),
+            status: CheckStatus::Pass,
+            message,
+            fix: None,
+        };
+    }
+    if on_battery == Some(true) {
+        message.push_str("; on battery now");
+    }
+    Check {
+        name: "speed".into(),
+        status: CheckStatus::Warn,
+        message,
+        fix: Some(
+            "plug in or pick a faster power mode, close CPU-heavy apps, or switch to a smaller model: vox download-model base-q5_1"
+                .into(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timed(at: u64, transcribe_ms: u64, audio_ms: u64) -> DictationRecord {
+        let mut r: DictationRecord = serde_json::from_value(serde_json::json!({
+            "id": format!("dict-{at}"), "created_at_ms": at, "app_name": "t", "bundle_id": "t",
+            "window_title": null, "format": "clean_prose", "privacy": "local_only", "mode": "auto",
+            "raw_text": "", "model_text": null, "final_text": "", "injection_strategy": "",
+            "injected_chars": 0, "corrected_text": null
+        }))
+        .unwrap();
+        r.latency.transcribe_ms = transcribe_ms;
+        r.latency.audio_ms = audio_ms;
+        r
+    }
+
+    #[test]
+    fn speed_check_reports_median_and_warns_when_slow() {
+        assert_eq!(speed_check(&[], None).status, CheckStatus::Info);
+        let fast: Vec<_> = (0..5).map(|i| timed(i, 1000, 4000)).collect();
+        let c = speed_check(&fast, None);
+        assert_eq!(c.status, CheckStatus::Pass);
+        assert!(c.message.contains("4.0x faster"), "{}", c.message);
+        let slow: Vec<_> = (0..5).map(|i| timed(i, 30_000, 8000)).collect();
+        let c = speed_check(&slow, Some(true));
+        assert_eq!(c.status, CheckStatus::Warn);
+        assert!(c.message.contains("on battery"), "{}", c.message);
+        assert!(c.fix.is_some());
+    }
 }

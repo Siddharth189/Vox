@@ -118,6 +118,18 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
+      # Fails if Whisper runs slower than real time: the MSVC-built 0.3.0
+      # Windows package ran at ~3.6x on a laptop and nothing caught it.
+      - name: Cache benchmark model and clip
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vox-bench
+          key: vox-bench-base-q5_1-jfk-v1
+
+      - name: Speed benchmark
+        shell: bash
+        run: scripts/bench.sh target/release/vox "${{ runner.temp }}/vox-bench"
+
   windows:
     name: build, test, package (windows-latest)
     runs-on: windows-latest
@@ -191,6 +203,18 @@ jobs:
 
       - name: cargo test
         run: cargo test --all-features
+
+      # Fails if Whisper runs slower than real time: the MSVC-built 0.3.0
+      # Windows package ran at ~3.6x on a laptop and nothing caught it.
+      - name: Cache benchmark model and clip
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vox-bench
+          key: vox-bench-base-q5_1-jfk-v1
+
+      - name: Speed benchmark
+        shell: bash
+        run: scripts/bench.sh target/release/vox.exe "${{ runner.temp }}/vox-bench"
 
       - name: vox smoke test
         shell: pwsh

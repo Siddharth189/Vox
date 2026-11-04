@@ -43,6 +43,29 @@ window.VoxHistory = {
       return `${(ms / 1000).toFixed(2)}s`;
     }
 
+    // Mirrors speed::realtime_factor: clips under 1.5 s are mostly fixed
+    // overhead, so they don't say how fast Whisper runs.
+    function speedFactor(lat) {
+      if (!lat || (lat.audio_ms || 0) < 1500) return null;
+      return (lat.transcribe_ms || 0) / lat.audio_ms;
+    }
+
+    // Returns HTML (numbers only, nothing user-supplied).
+    function fmtSpeed(factor) {
+      if (factor === null) return "n/a";
+      if (factor <= 0) return "instant";
+      return factor < 1
+        ? `${(1 / factor).toFixed(1)}x <small>faster</small>`
+        : `${factor.toFixed(1)}x <small>slower</small>`;
+    }
+
+    function median(values) {
+      if (!values.length) return null;
+      const v = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(v.length / 2);
+      return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+    }
+
     function fmtDate(ms) {
       const d = new Date(ms);
       const day = d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
@@ -77,6 +100,7 @@ window.VoxHistory = {
       const avgStt = avg(stt);
       const avgLlm = avg(llm);
       const avgPaste = avg(paste);
+      const speed = median(filtered.map((r) => speedFactor(r.latency)).filter((f) => f !== null));
 
       statsEl.innerHTML = `
         <div class="stat"><div class="stat-label">Avg total</div><div class="stat-value">${fmtSeconds(avgTotal)}</div></div>
@@ -84,6 +108,7 @@ window.VoxHistory = {
         <div class="stat"><div class="stat-label">STT</div><div class="stat-value">${fmtSeconds(avgStt)}</div></div>
         <div class="stat"><div class="stat-label">LLM</div><div class="stat-value">${fmtSeconds(avgLlm)}</div></div>
         <div class="stat"><div class="stat-label">Paste</div><div class="stat-value">${fmtSeconds(avgPaste)}</div></div>
+        <div class="stat" title="Median transcription time compared with how long you spoke"><div class="stat-label">Speed</div><div class="stat-value">${fmtSpeed(speed)}</div></div>
       `;
 
       const stages = [
@@ -139,6 +164,7 @@ window.VoxHistory = {
           <div class="stat"><div class="stat-label">Whisper</div><div class="stat-value">${fmtSeconds(lat.transcribe_ms || 0)}</div></div>
           <div class="stat"><div class="stat-label">LLM</div><div class="stat-value">${fmtSeconds(lat.process_ms || 0)}</div></div>
           <div class="stat"><div class="stat-label">Paste</div><div class="stat-value">${fmtSeconds(lat.inject_ms || 0)}</div></div>
+          <div class="stat" title="${lat.audio_ms ? `Whisper took ${fmtSeconds(lat.transcribe_ms || 0)} for ${fmtSeconds(lat.audio_ms)} of speech` : "Not measured for this dictation"}"><div class="stat-label">Speed</div><div class="stat-value">${fmtSpeed(speedFactor(lat))}</div></div>
         </div>
 
         <div class="stage-row">
@@ -157,16 +183,19 @@ window.VoxHistory = {
         </div>
 
         <div class="field-title" style="margin-top:1rem">Teach Vox</div>
-        <div class="field-desc" style="margin-bottom:0.5rem">Correct the final text to learn aliases.</div>
+        <div class="field-desc" style="margin-bottom:0.5rem">Fix what Vox got wrong, then click Learn. It remembers what it misheard, and suggests new words for your dictionary so Whisper expects them next time.</div>
         <textarea id="history_correct">${escapeHtml(record.corrected_text || record.final_text || "")}</textarea>
         <div class="actions">
           <button class="primary" id="history_learn">Learn correction</button>
           <span class="status" id="history_learn_status"></span>
         </div>
+        <div class="actions" id="history_suggestions" hidden></div>
       `;
 
-      detailEl.querySelector("#history_learn").addEventListener("click", async () => {
-        const st = detailEl.querySelector("#history_learn_status");
+      const st = detailEl.querySelector("#history_learn_status");
+      const suggestionsEl = detailEl.querySelector("#history_suggestions");
+
+      async function learn(addTerms) {
         const corrected = detailEl.querySelector("#history_correct").value;
         st.textContent = "Learning…";
         try {
@@ -176,15 +205,37 @@ window.VoxHistory = {
               record_id: record.id,
               original_text: record.final_text || "",
               corrected_text: corrected,
+              add_terms: addTerms,
             }),
           });
-          const n = (res.learned_aliases || []).length;
-          st.textContent = n ? `Learned ${n} alias(es)` : "No new aliases";
+          const parts = [];
+          for (const t of res.added_terms || []) parts.push(`added "${t}" to your dictionary`);
+          for (const a of res.learned_aliases || []) parts.push(`"${a.alias}" now becomes "${a.term}"`);
+          const suggested = res.suggested_terms || [];
+          st.textContent = parts.length
+            ? `Learned: ${parts.join("; ")}`
+            : suggested.length
+              ? "Vox doesn't know these words yet:"
+              : "Nothing new to learn";
+          renderSuggestions(suggested);
           state.settings = await VoxApp.api("/api/settings");
         } catch (e) {
           st.textContent = `Error: ${e.message}`;
         }
-      });
+      }
+
+      function renderSuggestions(terms) {
+        suggestionsEl.hidden = !terms.length;
+        suggestionsEl.innerHTML = terms.length
+          ? `<span class="muted">Add to dictionary:</span> ` +
+            terms.map((t) => `<button type="button" class="ghost" data-term="${escapeHtml(t)}">+ ${escapeHtml(t)}</button>`).join(" ")
+          : "";
+        for (const btn of suggestionsEl.querySelectorAll("button[data-term]")) {
+          btn.addEventListener("click", () => learn([btn.dataset.term]));
+        }
+      }
+
+      detailEl.querySelector("#history_learn").addEventListener("click", () => learn([]));
     }
 
     function applyFilter() {

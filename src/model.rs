@@ -158,6 +158,10 @@ pub struct LatencyMetrics {
     pub inject_ms: u64,
     #[serde(default)]
     pub total_ms: u64,
+    /// Length of the speech that was transcribed, after silence trimming.
+    /// 0 in records from before Vox measured it.
+    #[serde(default)]
+    pub audio_ms: u64,
 }
 
 impl LatencyMetrics {
@@ -168,7 +172,13 @@ impl LatencyMetrics {
             process_ms,
             inject_ms: 0,
             total_ms: privacy_ms + transcribe_ms + process_ms,
+            audio_ms: 0,
         }
+    }
+
+    pub fn with_audio(mut self, audio_ms: u64) -> Self {
+        self.audio_ms = audio_ms;
+        self
     }
 
     pub fn with_injection(mut self, inject_ms: u64) -> Self {

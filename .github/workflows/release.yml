@@ -92,6 +92,18 @@ jobs:
           grep -h '^CMAKE_C_COMPILER:' target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | tee cc.txt
           grep -qi clang cc.txt
 
+      # Fails if Whisper runs slower than real time: the MSVC-built 0.3.0
+      # Windows package ran at ~3.6x on a laptop and nothing caught it.
+      - name: Cache benchmark model and clip
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vox-bench
+          key: vox-bench-base-q5_1-jfk-v1
+
+      - name: Speed benchmark
+        shell: bash
+        run: scripts/bench.sh target/release/vox.exe "${{ runner.temp }}/vox-bench"
+
       - name: Package
         shell: pwsh
         run: |
@@ -156,6 +168,18 @@ jobs:
 
       - name: cargo build --release
         run: cargo build --release --locked
+
+      # Fails if Whisper runs slower than real time: the MSVC-built 0.3.0
+      # Windows package ran at ~3.6x on a laptop and nothing caught it.
+      - name: Cache benchmark model and clip
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vox-bench
+          key: vox-bench-base-q5_1-jfk-v1
+
+      - name: Speed benchmark
+        shell: bash
+        run: scripts/bench.sh target/release/vox "${{ runner.temp }}/vox-bench"
 
       - name: Package
         run: |

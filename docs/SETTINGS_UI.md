@@ -12,8 +12,10 @@ Local web UI served by the tray process at [http://127.0.0.1:8722](http://127.0.
 - **Snippets** - trigger phrase → text inserted verbatim.
 - **Dictionary** - custom dictionary terms + `Canonical = alias1, alias2` aliases.
 - **Profiles** - per-bundle-id format/privacy table (`default` required).
-- **History** - recent dictations with latency breakdown and inline correction
-  learning (`POST /api/learn-correction`).
+- **History** - recent dictations with latency breakdown, speed relative to the
+  length of speech, and inline correction learning (`POST /api/learn-correction`:
+  learns aliases for dictionary terms and returns `suggested_terms`; send them back
+  in `add_terms` to add them to the dictionary).
 
 ## Design notes
 

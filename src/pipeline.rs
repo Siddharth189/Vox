@@ -137,7 +137,8 @@ impl Pipeline {
                 raw_text,
                 model_text: None,
                 processed_text: String::new(),
-                latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0),
+                latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0)
+                    .with_audio(audio_ms),
                 audio_ms,
             });
         }
@@ -152,7 +153,8 @@ impl Pipeline {
             raw_text,
             model_text: processed.model_text.clone(),
             processed_text: processed.text,
-            latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms),
+            latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms)
+                .with_audio(audio_ms),
             audio_ms,
         })
     }
