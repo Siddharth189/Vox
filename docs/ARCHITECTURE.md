@@ -21,6 +21,32 @@ paste at the cursor.
    dictations, clips under 1 s are padded (whisper.cpp drops them otherwise),
    `auto` really auto-detects (whisper.cpp's own default is English), and the
    model is warmed up when the pipeline is built.
+
+   **Streaming** (`stt/streaming.rs`, on by default, setting
+   `streaming_transcription`). Whole-clip transcription makes the wait after
+   stop grow with the dictation (3.2 s for 14 s of speech, 9.3 s for 40 s on a
+   4-core laptop with `base-q5_1`). Instead, when recording starts the tray
+   opens a `StreamingSession` on the recorder's `LiveTap` (a shared view of the
+   growing capture buffer; `Recorder::start` allocates a fresh one per
+   dictation, so a draining worker never sees the next dictation's audio). A
+   worker thread polls it every 150 ms, and a pure `Segmenter` cuts it in the
+   middle of the first pause (400 ms below 10% of the segment's 95th-percentile
+   level) at least 4 s in, takes 200 ms pauses after 12 s, and cuts at the
+   quietest window by 20 s regardless. Each segment goes through the usual
+   trim/resample/silence gate and is transcribed with a `SegmentHint`: the last
+   200 characters so far as Whisper's prompt (after the dictionary), and the
+   language detected in the first segment when the input language is `auto`.
+   On stop, `Pipeline::prepare_streamed` re-checks privacy, then finishes the
+   session: only the tail since the last pause is left (about 2 s of speech on
+   real recordings). A segment that is only an echo of the prompt is dropped.
+   If any segment fails, the whole recording is transcribed in one pass, the
+   same as without streaming. Cancel (Esc) drops the session. History records
+   `streamed_segments`, and `transcribe_ms` is then only the wait after stop;
+   `stt_work_ms` is Whisper's total time across segments, which is what
+   `speed.rs` (slow-dictation warnings, `vox doctor`) measures against
+   `audio_ms`, so streaming can't hide a slow build.
+   `vox transcribe FILE.wav --stream` plays a file through this path in real
+   time and reports that wait.
 4. **Context** - the foreground app, used as the per-app profile key:
    - macOS: NSWorkspace bundle ID (`context/mac_detector.rs`, main thread, fail closed)
    - Windows: foreground window's process image name, e.g. `Code`

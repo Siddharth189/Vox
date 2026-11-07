@@ -124,6 +124,7 @@ function applySettingsToForm(s) {
   document.getElementById("voice_commands").checked = s.voice_commands !== false;
   document.getElementById("llm_provider").value = s.llm_provider || "ollama";
   document.getElementById("llm_base_url").value = s.llm_base_url || "";
+  document.getElementById("streaming_transcription").checked = s.streaming_transcription !== false;
   document.getElementById("system_override").value = s.system_message_override || "";
   document.getElementById("hotkey_enabled").checked = !!(s.hotkey && s.hotkey.enabled);
   hotkeyDraft.modifiers = (s.hotkey?.modifiers || ["control"]).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
@@ -166,6 +167,7 @@ function readGeneralPatch() {
     voice_commands: document.getElementById("voice_commands").checked,
     llm_provider: document.getElementById("llm_provider").value,
     llm_base_url: document.getElementById("llm_base_url").value.trim() || null,
+    streaming_transcription: document.getElementById("streaming_transcription").checked,
     input_device: document.getElementById("input_device").value || null,
     hotkey: {
       enabled: document.getElementById("hotkey_enabled").checked,

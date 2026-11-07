@@ -23,7 +23,8 @@ Vox is an open-source, offline alternative to cloud dictation apps. It lives in 
 text up for the app you're in, and pastes it at your cursor.
 
 You speak at 150 wpm; most people type at 40. On a 4-core laptop with no GPU, a short sentence
-reaches the cursor **under a second** after you stop talking.
+reaches the cursor **under a second** after you stop talking, and a long paragraph isn't much
+slower: Vox transcribes while you speak.
 
 - **Private by design.** On-device speech recognition. No account, no API key, no telemetry.
 - **Small.** Two ~6 MB executables and a 57 MB speech model, downloaded on first run.
@@ -150,6 +151,10 @@ cargo build --release --locked
   file"), and never inserts line breaks into a terminal.
 - **Snippets.** Say *"my calendar link"* or *"my signature"* and Vox types the stored text exactly
   as written, line breaks and all.
+- **Long dictations finish fast.** Vox transcribes while you talk, cutting the audio at natural
+  pauses. When you stop, only the last few seconds are left, so a 40-second paragraph doesn't
+  make you wait much longer than a quick reply. Turn it off with **Transcribe while you speak**
+  in settings.
 - **Multilingual.** Auto-detects the language, or pin input and output languages. Includes
   handling for Hinglish and other code-switched speech, and translation when a local LLM is on.
 
@@ -215,6 +220,7 @@ vox download-model [NAME]     fetch a Whisper model (--list for choices) and sel
 vox devices                   list microphones (* = selected)
 vox listen [--secs 5]         record once from the mic and print the cleaned result
 vox transcribe FILE.wav       transcribe a recording (benchmarks, bug reports)
+                [--stream]    ...played in real time through streaming; prints the wait after stop
 vox demo [--dry-run] "text"   run text through cleanup, voice commands, and snippets
 vox inject-test "text"        test auto-paste on its own
 vox autostart on|off|status   launch the tray at login
@@ -279,6 +285,7 @@ It holds `settings.yaml`, `history.json` (last 100 dictations), `stats.json` (co
 hotkey: { enabled: true, modifiers: [control], key: Period, mode: hybrid }  # hybrid | hold | toggle
 input_language: auto
 output_language: auto
+streaming_transcription: true   # transcribe while you speak
 voice_commands: true
 snippets:
   - trigger: my email

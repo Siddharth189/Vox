@@ -19,11 +19,12 @@ use crate::config::{self, HotkeyConfig, Settings};
 use crate::error::{Result, VoxError};
 use crate::history::{self, DictationRecord};
 use crate::hotkey::{self as hk, PttAction, PushToTalk};
-use crate::model::{elapsed_ms, InjectionResult, Mode, Privacy};
+use crate::model::{elapsed_ms, AppContext, AudioChunk, InjectionResult, Mode, Privacy};
 use crate::permissions;
 use crate::pipeline::{build_live_pipeline, Pipeline, PreparedReport};
 use crate::speed;
 use crate::stats;
+use crate::stt::StreamingSession;
 
 enum UserEvent {
     Hotkey(GlobalHotKeyEvent),
@@ -132,6 +133,9 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     let mut settings = Settings::load();
     let mut recorder = Recorder::new()?;
     recorder.set_device(settings.input_device.clone());
+    // Transcription of the dictation in progress, when streaming is on.
+    // Dropping it cancels it.
+    let mut stream: Option<StreamingSession> = None;
     let mut ptt = PushToTalk::new(settings.hotkey.mode);
 
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
@@ -309,6 +313,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     &proxy,
                     &model_path,
                     &mut recorder,
+                    &mut stream,
                     &mut cancel_registered,
                     &cancel_hotkey,
                     &tray,
@@ -341,6 +346,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     if recorder.is_recording() {
                         recorder.cancel();
                     }
+                    stream = None;
                     *control_flow = ControlFlow::Exit;
                 }
             }
@@ -350,6 +356,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                 if is_cancel {
                     if event.state == HotKeyState::Pressed && recorder.is_recording() {
                         recorder.cancel();
+                        stream = None;
                         ptt.reset();
                         unregister_cancel(&hotkey_manager, &cancel_hotkey, &mut cancel_registered);
                         if settings.sound_cues {
@@ -386,7 +393,8 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                         };
                         // Check the privacy switch *before* opening the mic,
                         // not after recording someone's password.
-                        if let Ok(ctx) = p.detector.current() {
+                        let start_ctx = p.detector.current().ok();
+                        if let Some(ref ctx) = start_ctx {
                             if ctx.profile.privacy == Privacy::Disabled {
                                 ptt.reset();
                                 if settings.sound_cues {
@@ -402,6 +410,13 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                                 if settings.sound_cues {
                                     cue::play(Cue::Start);
                                 }
+                                stream = settings.streaming_transcription.then(|| {
+                                    start_stream(
+                                        p,
+                                        &recorder,
+                                        start_ctx.unwrap_or_else(AppContext::unknown),
+                                    )
+                                });
                                 register_cancel(
                                     &hotkey_manager,
                                     &cancel_hotkey,
@@ -428,6 +443,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     PttAction::Stop => {
                         finish_recording(
                             &mut recorder,
+                            &mut stream,
                             &pipeline,
                             &proxy,
                             &settings,
@@ -598,6 +614,7 @@ fn periodic(
     proxy: &EventLoopProxy<UserEvent>,
     model_path: &dyn Fn(&Settings) -> PathBuf,
     recorder: &mut Recorder,
+    stream: &mut Option<StreamingSession>,
     cancel_registered: &mut bool,
     cancel_hotkey: &HotKey,
     tray: &TrayIcon,
@@ -616,6 +633,7 @@ fn periodic(
         ptt.reset();
         finish_recording(
             recorder,
+            stream,
             pipeline,
             proxy,
             settings,
@@ -681,6 +699,7 @@ fn periodic(
 #[allow(clippy::too_many_arguments)]
 fn finish_recording(
     recorder: &mut Recorder,
+    stream: &mut Option<StreamingSession>,
     pipeline: &Option<Arc<Pipeline>>,
     proxy: &EventLoopProxy<UserEvent>,
     settings: &Settings,
@@ -694,13 +713,21 @@ fn finish_recording(
     processing: &mut usize,
 ) {
     unregister_cancel(hotkey_manager, cancel_hotkey, cancel_registered);
-    let audio = match recorder.stop() {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("recorder stop failed: {e}");
-            set_look(tray, icons, look_for(false, *processing));
-            return;
+    // Streaming: most of the audio is already transcribed; the session
+    // finishes the rest. Otherwise transcribe the whole clip now.
+    let source = match stream.take() {
+        Some(session) => {
+            recorder.stop_capture();
+            Captured::Streamed(session)
         }
+        None => match recorder.stop() {
+            Ok(a) => Captured::Clip(a),
+            Err(e) => {
+                tracing::warn!("recorder stop failed: {e}");
+                set_look(tray, icons, look_for(false, *processing));
+                return;
+            }
+        },
     };
     if settings.sound_cues {
         cue::play(Cue::Stop);
@@ -730,11 +757,27 @@ fn finish_recording(
     let p = Arc::clone(p);
     let proxy = proxy.clone();
     thread::spawn(move || {
-        let result = p
-            .prepare_with_ctx(&audio, ctx, Mode::Auto)
-            .map_err(|e| e.to_string());
+        let result = match source {
+            Captured::Clip(audio) => p.prepare_with_ctx(&audio, ctx, Mode::Auto),
+            Captured::Streamed(session) => p.prepare_streamed(session, ctx, Mode::Auto),
+        }
+        .map_err(|e| e.to_string());
         let _ = proxy.send_event(UserEvent::Done(result));
     });
+}
+
+enum Captured {
+    Clip(AudioChunk),
+    Streamed(StreamingSession),
+}
+
+/// Starts transcribing the dictation `recorder` just started capturing,
+/// segment by segment, on the pipeline's Whisper.
+fn start_stream(p: &Arc<Pipeline>, recorder: &Recorder, ctx: AppContext) -> StreamingSession {
+    let p = Arc::clone(p);
+    StreamingSession::start(recorder.tap(), move |audio, hint| {
+        p.transcriber.transcribe_segment(audio, &ctx, hint)
+    })
 }
 
 fn register_cancel(manager: &GlobalHotKeyManager, key: &HotKey, registered: &mut bool) {

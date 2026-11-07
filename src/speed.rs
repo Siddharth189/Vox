@@ -22,10 +22,12 @@ pub const BASELINE_MULTIPLE: f64 = 2.0;
 const BASELINE_MIN_SAMPLES: usize = 5;
 const BASELINE_WINDOW: usize = 20;
 
-/// Seconds of transcription per second of speech (lower is faster).
+/// Seconds of transcription per second of speech (lower is faster). For a
+/// streamed dictation this is Whisper's total time across its segments, not
+/// the short wait after stop, so a slow build still shows up as slow.
 pub fn realtime_factor(latency: &LatencyMetrics) -> Option<f64> {
     (latency.audio_ms >= MIN_AUDIO_MS)
-        .then(|| latency.transcribe_ms as f64 / latency.audio_ms as f64)
+        .then(|| latency.stt_compute_ms() as f64 / latency.audio_ms as f64)
 }
 
 /// Realtime factors of the most recent dictations that have one, newest
@@ -85,7 +87,7 @@ pub fn check(latest: &LatencyMetrics, earlier: &[DictationRecord]) -> Option<Slo
     }
     Some(Slowdown {
         factor,
-        transcribe_ms: latest.transcribe_ms,
+        transcribe_ms: latest.stt_compute_ms(),
         audio_ms: latest.audio_ms,
     })
 }
@@ -228,6 +230,21 @@ mod tests {
         assert_eq!(realtime_factor(&latency(1000, 4000)), Some(0.25));
         // Records from before audio_ms existed deserialize as 0.
         assert_eq!(realtime_factor(&latency(1000, 0)), None);
+    }
+
+    #[test]
+    fn streamed_dictations_are_judged_on_whisper_time_not_the_wait() {
+        // 40 s of speech, 1.1 s wait after stop, but Whisper ran 50 s in all.
+        let streamed = LatencyMetrics {
+            transcribe_ms: 1_100,
+            audio_ms: 40_000,
+            streamed_segments: 7,
+            stt_work_ms: 50_000,
+            ..LatencyMetrics::default()
+        };
+        assert_eq!(realtime_factor(&streamed), Some(1.25));
+        let slow = check(&streamed, &[]).expect("slower than real time");
+        assert_eq!(slow.transcribe_ms, 50_000);
     }
 
     #[test]

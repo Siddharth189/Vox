@@ -160,6 +160,8 @@ pub struct SettingsPatch {
     pub llm_cleanup: Option<bool>,
     #[serde(default)]
     pub sound_cues: Option<bool>,
+    #[serde(default)]
+    pub streaming_transcription: Option<bool>,
     /// Absent: unchanged. `null`: system default. A name: that microphone.
     #[serde(default)]
     pub input_device: Option<Option<String>>,
@@ -195,6 +197,9 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     }
     if let Some(v) = patch.sound_cues {
         settings.sound_cues = v;
+    }
+    if let Some(v) = patch.streaming_transcription {
+        settings.streaming_transcription = v;
     }
     settings.output_language = patch.output_language;
     settings.input_language = patch.input_language.unwrap_or_else(|| "auto".into());
