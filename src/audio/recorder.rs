@@ -105,10 +105,10 @@ impl Recorder {
             return Ok(());
         }
 
-        {
-            let mut buf = lock_buffer(&self.buffer);
-            buf.clear();
-        }
+        // A fresh buffer per dictation, never a cleared shared one: a
+        // `LiveTap` from the previous dictation may still be draining its
+        // audio on a worker thread, and must not see this one's samples.
+        self.buffer = Arc::new(Mutex::new(Vec::new()));
 
         let device = resolve_input_device(self.device.as_deref())
             .ok_or_else(|| VoxError::Audio("no microphone found".into()))?;
@@ -159,6 +159,27 @@ impl Recorder {
         lock_buffer(&self.buffer).clear();
     }
 
+    /// A live view of the audio being captured right now, for transcribing
+    /// while the user is still speaking. Only meaningful after `start()`;
+    /// it keeps seeing this dictation's samples after `stop_capture()`.
+    pub fn tap(&self) -> LiveTap {
+        LiveTap {
+            buffer: Arc::clone(&self.buffer),
+            sample_rate: if self.sample_rate == 0 {
+                TARGET_RATE
+            } else {
+                self.sample_rate
+            },
+        }
+    }
+
+    /// Stops capture but leaves the audio where a `LiveTap` can read it
+    /// (the streaming path owns the samples from here on).
+    pub fn stop_capture(&mut self) {
+        self.stream.take();
+        self.started_at = None;
+    }
+
     pub fn stop(&mut self) -> Result<AudioChunk> {
         self.stream.take(); // drop stops capture
         self.started_at = None;
@@ -182,6 +203,51 @@ pub fn finish_capture(samples: &[f32], rate: u32) -> AudioChunk {
     AudioChunk {
         samples: resampled,
         sample_rate: TARGET_RATE,
+    }
+}
+
+/// Shared, growing view of one dictation's raw mono capture (at the device's
+/// native rate). The audio callback appends; readers copy out what's new.
+#[derive(Clone)]
+pub struct LiveTap {
+    buffer: Arc<Mutex<Vec<f32>>>,
+    sample_rate: u32,
+}
+
+impl LiveTap {
+    /// An empty tap fed by `push` instead of a microphone (file playback in
+    /// `vox transcribe --stream`, and tests).
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            sample_rate,
+        }
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn push(&self, samples: &[f32]) {
+        lock_buffer(&self.buffer).extend_from_slice(samples);
+    }
+
+    pub fn len(&self) -> usize {
+        lock_buffer(&self.buffer).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends every sample from index `from` on to `out`, returning the
+    /// new read position. The lock is held only for the copy.
+    pub fn read_from(&self, from: usize, out: &mut Vec<f32>) -> usize {
+        let buf = lock_buffer(&self.buffer);
+        if from < buf.len() {
+            out.extend_from_slice(&buf[from..]);
+        }
+        buf.len().max(from)
     }
 }
 
@@ -257,7 +323,11 @@ where
         .map_err(|e| VoxError::Audio(e.to_string()))
 }
 
-fn window_rms(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+pub(crate) fn window_len(sample_rate: u32) -> usize {
+    ((sample_rate as u64 * WINDOW_MS as u64) / 1000) as usize
+}
+
+pub(crate) fn window_rms(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     let window_len = ((sample_rate as u64 * WINDOW_MS as u64) / 1000) as usize;
     if window_len == 0 {
         return Vec::new();

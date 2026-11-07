@@ -11,7 +11,7 @@ use crate::model::{
 };
 use crate::privacy::PrivacyPolicy;
 use crate::process::{CleanupProcessor, TextProcessor};
-use crate::stt::{self, LocalWhisper, Transcriber};
+use crate::stt::{self, LocalWhisper, StreamingSession, Transcriber};
 
 /// The real pipeline: platform app detection, local Whisper, LLM-or-local
 /// cleanup, and auto-paste (or clipboard-only). Loads and warms up the
@@ -113,17 +113,59 @@ impl Pipeline {
         let transcribe_start = Instant::now();
         let transcript = self.transcriber.transcribe(audio, &ctx)?;
         let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
+        Ok(self.process_transcript(transcript, ctx, mode, privacy_ms, transcribe_ms))
+    }
+
+    /// Like `prepare_with_ctx`, for a dictation transcribed while it was
+    /// recorded. Call once capture has stopped; `ctx` is the app focused
+    /// now. The privacy switch is checked again first: if the user moved to
+    /// a disabled app mid-dictation, the session is dropped (cancelled) and
+    /// its text never goes anywhere. `transcribe_ms` is the wait for the
+    /// rest of the audio, which is what the user actually waits through.
+    pub fn prepare_streamed(
+        &self,
+        session: StreamingSession,
+        ctx: AppContext,
+        mode: Mode,
+    ) -> Result<PreparedReport> {
+        let privacy_start = Instant::now();
+        self.privacy.ensure_allowed(&ctx)?;
+        let privacy_ms = elapsed_ms(privacy_start.elapsed());
+
+        let transcribe_start = Instant::now();
+        let outcome = session.finish()?;
+        let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
+        tracing::debug!(
+            "streamed stt: {} segments ({} while speaking), fell back = {}",
+            outcome.segments,
+            outcome.segments_while_speaking,
+            outcome.fell_back
+        );
+        let mut report =
+            self.process_transcript(outcome.transcript, ctx, mode, privacy_ms, transcribe_ms);
+        report.latency.streamed_segments = outcome.segments_while_speaking;
+        Ok(report)
+    }
+
+    fn process_transcript(
+        &self,
+        transcript: crate::model::Transcript,
+        ctx: AppContext,
+        mode: Mode,
+        privacy_ms: u64,
+        transcribe_ms: u64,
+    ) -> PreparedReport {
         let raw_text = transcript.text.clone();
 
         if stt::is_non_speech(&raw_text) {
-            return Ok(PreparedReport {
+            return PreparedReport {
                 app_name: ctx.app_name.clone(),
                 ctx,
                 raw_text,
                 model_text: None,
                 processed_text: String::new(),
                 latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0),
-            });
+            };
         }
 
         let process_start = Instant::now();
@@ -138,14 +180,14 @@ impl Pipeline {
         };
         let process_ms = elapsed_ms(process_start.elapsed());
 
-        Ok(PreparedReport {
+        PreparedReport {
             app_name: ctx.app_name.clone(),
             ctx,
             raw_text,
             model_text: processed.model_text.clone(),
             processed_text: processed.text,
             latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms),
-        })
+        }
     }
 
     pub fn inject_processed_text(
@@ -231,6 +273,45 @@ mod tests {
         let report = pipeline.run(&audio(), Mode::Auto).unwrap();
         assert!(report.prepared.processed_text.is_empty());
         assert_eq!(report.injection.strategy, "skipped");
+    }
+
+    #[test]
+    fn streamed_dictation_is_processed_like_a_clip() {
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new("unused")),
+            Box::new(FakeTextProcessor::returning("Cleaned.")),
+            Box::new(FakeTextInjector::new()),
+        );
+        let tap = crate::audio::LiveTap::new(16_000);
+        tap.push(&vec![0.2; 16_000 * 2]);
+        let session = StreamingSession::start(tap, |_: &AudioChunk, _: &stt::SegmentHint| {
+            Ok(crate::model::Transcript::new("streamed words"))
+        });
+        let report = pipeline
+            .prepare_streamed(session, ctx_with_privacy(Privacy::LocalOnly), Mode::Auto)
+            .unwrap();
+        assert_eq!(report.raw_text, "streamed words");
+        assert_eq!(report.processed_text, "Cleaned.");
+    }
+
+    #[test]
+    fn streamed_dictation_into_disabled_app_is_discarded() {
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new("unused")),
+            Box::new(FakeTextProcessor::passthrough()),
+            Box::new(FakeTextInjector::new()),
+        );
+        let tap = crate::audio::LiveTap::new(16_000);
+        tap.push(&vec![0.2; 16_000 * 2]);
+        let session = StreamingSession::start(tap, |_: &AudioChunk, _: &stt::SegmentHint| {
+            Ok(crate::model::Transcript::new("secret"))
+        });
+        let err = pipeline
+            .prepare_streamed(session, ctx_with_privacy(Privacy::Disabled), Mode::Auto)
+            .unwrap_err();
+        assert!(matches!(err, crate::error::VoxError::PrivacyBlocked(_)));
     }
 
     #[test]

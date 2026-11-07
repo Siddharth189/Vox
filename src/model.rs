@@ -158,6 +158,15 @@ pub struct LatencyMetrics {
     pub inject_ms: u64,
     #[serde(default)]
     pub total_ms: u64,
+    /// Speech segments already transcribed while the user was still
+    /// talking (0 = transcribed in one pass after they stopped). When
+    /// nonzero, `transcribe_ms` is only the wait after they stopped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub streamed_segments: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl LatencyMetrics {
@@ -168,6 +177,7 @@ impl LatencyMetrics {
             process_ms,
             inject_ms: 0,
             total_ms: privacy_ms + transcribe_ms + process_ms,
+            streamed_segments: 0,
         }
     }
 

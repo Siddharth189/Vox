@@ -194,6 +194,10 @@ pub struct Settings {
     /// looking at the tray.
     #[serde(default = "default_true")]
     pub sound_cues: bool,
+    /// Transcribe in segments while you're still talking, so stopping only
+    /// waits for the last few seconds instead of the whole dictation.
+    #[serde(default = "default_true")]
+    pub streaming_transcription: bool,
     /// Microphone to record from (case-insensitive name match). None, or a
     /// name that isn't connected right now, means the system default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,6 +357,7 @@ impl Settings {
             hotkey: HotkeyConfig::default(),
             llm_cleanup: true,
             sound_cues: true,
+            streaming_transcription: true,
             input_device: None,
             profiles,
         }
@@ -692,6 +697,7 @@ profiles:
         assert_eq!(s.hotkey.mode, HotkeyMode::Hybrid);
         assert!(s.llm_cleanup);
         assert!(s.sound_cues);
+        assert!(s.streaming_transcription);
     }
 
     #[test]

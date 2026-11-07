@@ -121,6 +121,7 @@ function applySettingsToForm(s) {
   document.getElementById("auto_paste").checked = !!s.auto_paste;
   document.getElementById("llm_cleanup").checked = s.llm_cleanup !== false;
   document.getElementById("sound_cues").checked = s.sound_cues !== false;
+  document.getElementById("streaming_transcription").checked = s.streaming_transcription !== false;
   document.getElementById("system_override").value = s.system_message_override || "";
   document.getElementById("hotkey_enabled").checked = !!(s.hotkey && s.hotkey.enabled);
   hotkeyDraft.modifiers = (s.hotkey?.modifiers || ["control"]).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
@@ -160,6 +161,7 @@ function readGeneralPatch() {
     auto_paste: document.getElementById("auto_paste").checked,
     llm_cleanup: document.getElementById("llm_cleanup").checked,
     sound_cues: document.getElementById("sound_cues").checked,
+    streaming_transcription: document.getElementById("streaming_transcription").checked,
     input_device: document.getElementById("input_device").value || null,
     hotkey: {
       enabled: document.getElementById("hotkey_enabled").checked,

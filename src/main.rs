@@ -92,7 +92,7 @@ Usage:
   vox setup [--model NAME]         download the speech model and check everything
   vox doctor [--json]              readiness report
   vox download-model [NAME]        fetch a Whisper model (default: {}); `--list` shows choices
-  vox transcribe FILE.wav [--model PATH] [--lang LANG] [--threads N] [--repeat N]
+  vox transcribe FILE.wav [--model PATH] [--lang LANG] [--threads N] [--repeat N] [--stream]
   vox listen [--secs N] [--model PATH] [--device NAME] [--dry-run]
   vox devices                      list microphones (* = selected)
   vox demo [--app APP_ID] [--dry-run] [--input LANG] [--lang LANG] [--llm MODEL] \"text\"
@@ -319,6 +319,9 @@ fn cmd_transcribe(args: &[String]) -> Result<()> {
     }
 
     let ctx = AppContext::unknown();
+    if args.iter().any(|a| a == "--stream") {
+        return transcribe_streamed(std::sync::Arc::new(transcriber), &files, &settings, args);
+    }
     for file in files {
         let audio = vox::audio::wav::read_as_capture(std::path::Path::new(&file))?;
         if files_header_needed(args) {
@@ -337,6 +340,70 @@ fn cmd_transcribe(args: &[String]) -> Result<()> {
         let first = timings[0];
         let rtf = best as f64 / 1000.0 / audio.duration_secs().max(0.001);
         println!("stt: first {first}ms, best {best}ms ({rtf:.2}x realtime)");
+        println!("raw: {raw}");
+        let cleaned = vox::process::clean_text(
+            &raw,
+            settings.profile_for("default").format,
+            &settings.custom_dictionary,
+            &settings.custom_aliases,
+        );
+        println!("final: {cleaned}");
+    }
+    Ok(())
+}
+
+/// `vox transcribe --stream`: plays each file into the streaming
+/// transcriber in real time, as the microphone would, then reports how long
+/// "stop" had to wait for the text. That wait is what streaming shortens;
+/// compare it with the plain `vox transcribe` time for the same file.
+fn transcribe_streamed(
+    transcriber: std::sync::Arc<LocalWhisper>,
+    files: &[String],
+    settings: &Settings,
+    args: &[String],
+) -> Result<()> {
+    use vox::audio::LiveTap;
+    use vox::stt::StreamingSession;
+
+    const FEED: std::time::Duration = std::time::Duration::from_millis(50);
+    for file in files {
+        let wav = vox::audio::wav::read(std::path::Path::new(file))?;
+        if files_header_needed(args) {
+            println!("file: {file}");
+        }
+        let secs = wav.samples.len() as f64 / wav.sample_rate.max(1) as f64;
+        println!("audio: {secs:.2}s (played in real time)");
+
+        let tap = LiveTap::new(wav.sample_rate);
+        let t = std::sync::Arc::clone(&transcriber);
+        let ctx = AppContext::unknown();
+        let session = StreamingSession::start(tap.clone(), move |audio, hint| {
+            t.transcribe_segment(audio, &ctx, hint)
+        });
+        let per_feed = (wav.sample_rate as u128 * FEED.as_millis() / 1000) as usize;
+        let started = Instant::now();
+        for (i, chunk) in wav.samples.chunks(per_feed.max(1)).enumerate() {
+            tap.push(chunk);
+            // Pace against the wall clock so slow pushes don't drift.
+            let due = started + FEED * (i as u32 + 1);
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        let stop = Instant::now();
+        let outcome = session.finish()?;
+        let wait_ms = stop.elapsed().as_millis();
+        println!(
+            "stt: {wait_ms}ms after stop | {} segments, {} done while speaking{}",
+            outcome.segments,
+            outcome.segments_while_speaking,
+            if outcome.fell_back {
+                " (fell back to one pass)"
+            } else {
+                ""
+            }
+        );
+        let raw = outcome.transcript.text;
         println!("raw: {raw}");
         let cleaned = vox::process::clean_text(
             &raw,

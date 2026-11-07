@@ -23,6 +23,11 @@ environment and display server you run) rather than code-dependent. See
   Rebind it by pressing a new shortcut in the settings UI.
 - **Fully local pipeline.** Speech-to-text runs on-device via Whisper (Metal-accelerated on
   macOS, CPU on Windows and Linux). No cloud calls, no API keys, no telemetry.
+- **Long dictations finish as fast as short ones.** Vox transcribes while you talk, cutting
+  the audio at natural pauses and transcribing each piece in the background. When you stop,
+  only the last few seconds are left, so a 40-second paragraph doesn't make you wait any
+  longer than a quick reply. Turn it off in settings ("Transcribe while you speak") to
+  transcribe in one pass after you stop.
 - **Instant cleanup, LLM optional.** Built-in cleanup (filler words, spacing, capitalization,
   terminal/code-aware formatting, your dictionary) adds no latency and needs nothing extra.
   When Ollama is running with the configured model, Vox uses it for deeper rewriting and
@@ -320,6 +325,7 @@ cargo clippy --all-targets --all-features
 ./target/release/vox doctor
 ./target/release/vox demo --dry-run "hey john review pr six eight four"
 ./target/release/vox transcribe some-recording.wav --repeat 3   # STT latency/accuracy
+./target/release/vox transcribe some-recording.wav --stream     # wait after stop, streamed
 ```
 
 **Windows**: build with the MSVC toolchain (Visual Studio 2022 Build Tools with the C++
