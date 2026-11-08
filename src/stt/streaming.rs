@@ -3,9 +3,9 @@
 //! Whole-clip transcription makes the wait after the hotkey grow with the
 //! dictation: ~1 s for a short reply, ~9 s for a 40 s paragraph on a 4-core
 //! laptop. Instead, a worker thread watches the live capture, cuts it at
-//! natural pauses into segments of a few seconds, and transcribes each one
-//! as soon as it's complete. When the user stops, only the audio since the
-//! last pause is left to transcribe, so the wait stays roughly constant no
+//! natural pauses into segments, and transcribes each one as soon as it's
+//! complete. When the user stops, only the audio since the last kept
+//! segment is left to transcribe, so the wait stays roughly constant no
 //! matter how long they spoke.
 //!
 //! Accuracy safeguards, since each segment is decoded on its own:
@@ -13,6 +13,12 @@
 //!   someone talks for [`HARD_MAX_SECS`] without a breath;
 //! - segments are at least [`MIN_SEGMENT_SECS`] long, enough context for
 //!   Whisper to get the language and casing right;
+//! - a pause isn't always the end of a thought ("ask not ... what your
+//!   country can do for you"), and a fragment decoded on its own gets
+//!   "fixed" by Whisper ("asked not"). So a segment is only kept when
+//!   Whisper ends it as a sentence; otherwise its audio stays pending and is
+//!   decoded again, longer, at the next pause. Past [`SOFT_MAX_SECS`] it's
+//!   kept regardless. The redo happens while the user is still talking;
 //! - each segment is prompted with the text before it, so it continues the
 //!   sentence instead of starting a new one, and in auto-detect mode the
 //!   language found in the first segment is kept for the rest;
@@ -27,14 +33,15 @@ use crate::audio::{self, LiveTap, SILENCE_RMS};
 use crate::error::{Result, VoxError};
 use crate::model::{AudioChunk, Transcript};
 
-/// Don't cut before this much audio: shorter segments lose context and
-/// make Whisper guess at casing and punctuation.
-pub const MIN_SEGMENT_SECS: f32 = 4.0;
+/// Don't cut before this much audio: shorter segments lose context, make
+/// Whisper guess at casing and punctuation, and are more often fragments.
+pub const MIN_SEGMENT_SECS: f32 = 6.0;
 /// Quiet stretch that counts as a pause between phrases. Within a sentence,
 /// gaps between words run ~50-250 ms; between phrases, 300 ms and up.
 pub const PAUSE_MS: u32 = 400;
-/// Past this, take any shorter pause: a long, breathless segment costs more
-/// at the end than a slightly early cut costs in accuracy.
+/// Past this, take any shorter pause, and keep the segment even if it
+/// doesn't end a sentence: a long, unbroken segment costs more at the end
+/// than a slightly early cut costs in accuracy.
 pub const SOFT_MAX_SECS: f32 = 12.0;
 pub const SHORT_PAUSE_MS: u32 = 200;
 /// Never let a segment grow past this (Whisper's window is 30 s). Cut at the
@@ -60,6 +67,9 @@ pub struct Segmenter {
     pending: Vec<f32>,
     /// RMS of each complete 20 ms window of `pending`.
     rms: Vec<f32>,
+    /// Window of the last deferred cut: only pauses that start after it
+    /// are candidates, so a long pause isn't re-tried on every poll.
+    not_before: Option<usize>,
 }
 
 impl Segmenter {
@@ -69,6 +79,7 @@ impl Segmenter {
             window: audio::window_len(sample_rate).max(1),
             pending: Vec::new(),
             rms: Vec::new(),
+            not_before: None,
         }
     }
 
@@ -98,16 +109,42 @@ impl Segmenter {
         self.window as f32 * 1000.0 / self.rate as f32
     }
 
-    /// The next complete segment (raw samples, native rate), if the audio so
-    /// far has a good place to cut. Call repeatedly until it returns None.
+    /// Where the audio so far could be cut (a window index), if anywhere.
+    pub fn next_cut(&self) -> Option<usize> {
+        self.find_cut()
+    }
+
+    /// The raw samples (native rate) before `cut`.
+    pub fn segment(&self, cut: usize) -> &[f32] {
+        &self.pending[..(cut * self.window).min(self.pending.len())]
+    }
+
+    /// Length of the segment before `cut`.
+    pub fn secs_at(&self, cut: usize) -> f32 {
+        self.segment(cut).len() as f32 / self.rate as f32
+    }
+
+    /// Keep the segment before `cut`: drop it from the pending audio.
+    pub fn commit(&mut self, cut: usize) -> Vec<f32> {
+        self.not_before = None;
+        self.split_at_window(cut)
+    }
+
+    /// Don't cut at `cut` after all; look for a later pause instead.
+    pub fn defer(&mut self, cut: usize) {
+        self.not_before = Some(cut);
+    }
+
+    /// Cut and keep the next segment, if there's a place to cut.
     pub fn take_segment(&mut self) -> Option<Vec<f32>> {
         let cut = self.find_cut()?;
-        Some(self.split_at_window(cut))
+        Some(self.commit(cut))
     }
 
     /// Everything not yet cut (the end of the dictation).
     pub fn take_rest(&mut self) -> Vec<f32> {
         self.rms.clear();
+        self.not_before = None;
         std::mem::take(&mut self.pending)
     }
 
@@ -144,6 +181,9 @@ impl Segmenter {
             while i < n && self.rms[i] < threshold {
                 i += 1;
             }
+            if self.not_before.is_some_and(|nb| start <= nb) {
+                continue; // the pause we already tried, or one before it
+            }
             let len = i - start;
             let mid = start + len / 2;
             let needed = if mid >= soft_max { short_pause } else { pause };
@@ -154,7 +194,10 @@ impl Segmenter {
 
         if n >= hard_max {
             // No pause in 20 s: cut at the quietest window near the cap.
-            let from = hard_max.saturating_sub(self.windows_for_secs(HARD_CUT_SEARCH_SECS));
+            let from = hard_max
+                .saturating_sub(self.windows_for_secs(HARD_CUT_SEARCH_SECS))
+                .max(self.not_before.map_or(0, |nb| nb + 1))
+                .min(hard_max - 1);
             let quietest = (from..hard_max)
                 .min_by(|&a, &b| self.rms[a].total_cmp(&self.rms[b]))
                 .unwrap_or(hard_max);
@@ -174,6 +217,14 @@ fn quiet_threshold(rms: &[f32]) -> f32 {
     (peak * QUIET_RATIO).max(SILENCE_RMS)
 }
 
+/// True when Whisper ended `text` as a sentence (closing quotes and
+/// brackets aside), in any script it writes.
+pub fn ends_sentence(text: &str) -> bool {
+    text.trim_end()
+        .trim_end_matches(['"', '\'', ')', ']', '»', '”', '’', '」', '』'])
+        .ends_with(['.', '?', '!', '…', '。', '？', '！', '।', '؟', '\u{06D4}'])
+}
+
 /// What the transcriber should know about the segments before this one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentHint {
@@ -187,7 +238,7 @@ pub struct SegmentHint {
 #[derive(Debug, Clone)]
 pub struct StreamOutcome {
     pub transcript: Transcript,
-    /// Segments transcribed (including the final one).
+    /// Segments kept (including the final one).
     pub segments: u32,
     /// Of those, how many were done before the user stopped.
     pub segments_while_speaking: u32,
@@ -196,7 +247,7 @@ pub struct StreamOutcome {
     pub fell_back: bool,
     /// Speech actually transcribed (after silence trimming), in ms.
     pub audio_ms: u64,
-    /// Time spent inside the transcriber across all segments, in ms: the
+    /// Time spent inside the transcriber across all attempts, in ms: the
     /// honest measure of Whisper's speed, unlike the wait after stop.
     pub work_ms: u64,
 }
@@ -255,6 +306,14 @@ impl Drop for StreamingSession {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// Done with this audio (kept, or nothing in it worth keeping).
+    Keep,
+    /// Ends mid-sentence: leave it pending and retry at a later pause.
+    Defer,
+}
+
 struct Progress {
     texts: Vec<String>,
     language: Option<String>,
@@ -272,37 +331,66 @@ impl Progress {
         }
     }
 
-    fn transcribe(&mut self, raw: &[f32], rate: u32, transcribe: &mut SegmentFn) {
+    /// Transcribes `raw`. Unless `must_keep`, a result that doesn't end a
+    /// sentence is discarded and `Defer` returned.
+    fn transcribe(
+        &mut self,
+        raw: &[f32],
+        rate: u32,
+        must_keep: bool,
+        transcribe: &mut SegmentFn,
+    ) -> Verdict {
         if self.failed.is_some() {
-            return;
+            return Verdict::Keep;
         }
         let chunk = audio::finish_capture(raw, rate);
         // Silent stretches (a long think between sentences) never reach
         // Whisper, which would only hallucinate "Thank you." into them.
         if chunk.samples.is_empty() || audio::is_silent(&chunk.samples, chunk.sample_rate) {
-            return;
+            return Verdict::Keep;
         }
         let started = Instant::now();
         let result = transcribe(&chunk, &self.hint());
         self.work += started.elapsed();
         match result {
             Ok(t) => {
+                let text = t.text.trim();
+                let speech = !super::is_non_speech(text);
+                if speech && !must_keep && !ends_sentence(text) {
+                    return Verdict::Defer;
+                }
                 self.segments += 1;
                 self.audio_secs += chunk.duration_secs();
                 if self.language.is_none() {
                     self.language = t.language.clone();
                 }
-                let text = t.text.trim();
-                if super::is_non_speech(text) || repeats_previous(text, &self.texts) {
-                    return;
+                if speech && !repeats_previous(text, &self.texts) {
+                    self.texts.push(text.to_string());
                 }
-                self.texts.push(text.to_string());
+                Verdict::Keep
             }
             Err(e) => {
                 tracing::warn!("streaming segment failed, will transcribe the whole clip: {e}");
                 self.failed = Some(e);
+                Verdict::Keep
             }
         }
+    }
+
+    /// Tries the next cut, if any: keeps it, or defers it to a later pause.
+    /// Returns false when there's nothing to cut yet.
+    fn advance(&mut self, segmenter: &mut Segmenter, rate: u32, f: &mut SegmentFn) -> bool {
+        let Some(cut) = segmenter.next_cut() else {
+            return false;
+        };
+        let must_keep = segmenter.secs_at(cut) >= SOFT_MAX_SECS;
+        match self.transcribe(segmenter.segment(cut), rate, must_keep, f) {
+            Verdict::Keep => {
+                segmenter.commit(cut);
+            }
+            Verdict::Defer => segmenter.defer(cut),
+        }
+        true
     }
 }
 
@@ -334,11 +422,9 @@ fn worker(
         fresh.clear();
         read_pos = tap.read_from(read_pos, &mut fresh);
         segmenter.push(&fresh);
-        while progress.failed.is_none() {
-            let Some(segment) = segmenter.take_segment() else {
-                break;
-            };
-            progress.transcribe(&segment, rate, transcribe.as_mut());
+        while progress.failed.is_none()
+            && progress.advance(&mut segmenter, rate, transcribe.as_mut())
+        {
             match rx.try_recv() {
                 Ok(Signal::Cancel) | Err(TryRecvError::Disconnected) => return None,
                 // Finish mid-backlog: keep going, the rest is the tail.
@@ -365,15 +451,18 @@ fn finish(
     let mut fresh = Vec::new();
     tap.read_from(read_pos, &mut fresh);
     segmenter.push(&fresh);
-    // Normally just the tail; more if the worker fell behind real time.
-    while progress.failed.is_none() {
-        let Some(segment) = segmenter.take_segment() else {
+    // Normally the tail goes to Whisper in one piece: one pass is the most
+    // accurate, and splitting it now would only add work after stop. Only
+    // a backlog too long for one pass (the worker fell behind) is cut.
+    while progress.failed.is_none() && segmenter.pending_secs() > HARD_MAX_SECS {
+        let Some(cut) = segmenter.next_cut() else {
             break;
         };
-        progress.transcribe(&segment, rate, transcribe.as_mut());
+        let segment = segmenter.commit(cut);
+        progress.transcribe(&segment, rate, true, transcribe.as_mut());
     }
     let rest = segmenter.take_rest();
-    progress.transcribe(&rest, rate, transcribe.as_mut());
+    progress.transcribe(&rest, rate, true, transcribe.as_mut());
 
     if progress.failed.is_some() {
         // Same result as without streaming: one pass over everything.
@@ -480,26 +569,30 @@ mod tests {
         samples.len() as f32 / RATE as f32
     }
 
+    fn concat(parts: &[Vec<f32>]) -> Vec<f32> {
+        parts.concat()
+    }
+
     #[test]
     fn short_dictation_is_never_cut() {
         let mut s = Segmenter::new(RATE);
-        s.push(&tone(1.5));
+        s.push(&tone(2.5));
         s.push(&quiet(0.6));
-        s.push(&tone(1.5));
+        s.push(&tone(2.5));
         assert!(s.take_segment().is_none());
-        assert!((secs(&s.take_rest()) - 3.6).abs() < 0.01);
+        assert!((secs(&s.take_rest()) - 5.6).abs() < 0.01);
     }
 
     #[test]
     fn cuts_in_the_middle_of_the_first_pause_past_the_minimum() {
         let mut s = Segmenter::new(RATE);
-        s.push(&tone(2.0));
-        s.push(&quiet(0.6)); // too early: ends before 4 s
-        s.push(&tone(2.5)); // 5.1 s
-        s.push(&quiet(0.6)); // pause centered at 5.4 s
+        s.push(&tone(3.0));
+        s.push(&quiet(0.6)); // too early: ends before 6 s
+        s.push(&tone(3.0)); // 6.6 s
+        s.push(&quiet(0.6)); // pause centered at 6.9 s
         s.push(&tone(1.0));
         let seg = s.take_segment().expect("should cut at the second pause");
-        assert!((secs(&seg) - 5.4).abs() < 0.03, "cut at {}", secs(&seg));
+        assert!((secs(&seg) - 6.9).abs() < 0.03, "cut at {}", secs(&seg));
         assert!(s.take_segment().is_none());
         assert!((secs(&s.take_rest()) - 1.3).abs() < 0.03);
     }
@@ -507,7 +600,7 @@ mod tests {
     #[test]
     fn breath_between_words_is_not_a_pause() {
         let mut s = Segmenter::new(RATE);
-        for _ in 0..4 {
+        for _ in 0..5 {
             s.push(&tone(1.4));
             s.push(&quiet(0.15));
         }
@@ -517,12 +610,12 @@ mod tests {
     #[test]
     fn a_pause_still_in_progress_counts() {
         let mut s = Segmenter::new(RATE);
-        s.push(&tone(5.0));
+        s.push(&tone(7.0));
         s.push(&quiet(0.3));
         assert!(s.take_segment().is_none(), "300 ms isn't a pause yet");
         s.push(&quiet(0.2));
         let seg = s.take_segment().expect("500 ms of quiet is");
-        assert!(secs(&seg) > 5.0 && secs(&seg) < 5.5);
+        assert!(secs(&seg) > 7.0 && secs(&seg) < 7.5);
     }
 
     #[test]
@@ -551,12 +644,33 @@ mod tests {
     }
 
     #[test]
+    fn deferred_cut_moves_on_to_the_next_pause() {
+        let mut s = Segmenter::new(RATE);
+        s.push(&concat(&[tone(6.5), quiet(0.5)]));
+        let first = s.next_cut().expect("pause after 6.5 s");
+        s.defer(first);
+        // The same pause, still going, is not offered again...
+        s.push(&quiet(1.0));
+        assert_eq!(s.next_cut(), None);
+        // ...but the next one is, and the segment spans both.
+        s.push(&concat(&[tone(2.0), quiet(0.5)]));
+        let second = s.next_cut().expect("next pause");
+        assert!(second > first);
+        assert!(
+            (s.secs_at(second) - 10.25).abs() < 0.05,
+            "{}",
+            s.secs_at(second)
+        );
+        let seg = s.commit(second);
+        assert!((secs(&seg) - 10.25).abs() < 0.05);
+        // Committing clears the deferral for what follows.
+        s.push(&concat(&[tone(6.5), quiet(0.5)]));
+        assert!(s.next_cut().is_some());
+    }
+
+    #[test]
     fn push_in_odd_sized_chunks_matches_one_push() {
-        let mut audio = tone(3.0);
-        audio.extend(quiet(0.2));
-        audio.extend(tone(2.0));
-        audio.extend(quiet(0.7));
-        audio.extend(tone(1.0));
+        let audio = concat(&[tone(3.0), quiet(0.2), tone(3.5), quiet(0.7), tone(1.0)]);
         let mut whole = Segmenter::new(RATE);
         whole.push(&audio);
         let mut pieces = Segmenter::new(RATE);
@@ -564,10 +678,9 @@ mod tests {
             pieces.push(chunk);
         }
         assert_eq!(whole.rms.len(), pieces.rms.len());
-        assert_eq!(
-            whole.take_segment().map(|s| s.len()),
-            pieces.take_segment().map(|s| s.len())
-        );
+        let cut = whole.take_segment().map(|s| s.len());
+        assert!(cut.is_some());
+        assert_eq!(cut, pieces.take_segment().map(|s| s.len()));
     }
 
     #[test]
@@ -575,11 +688,23 @@ mod tests {
         let rate = 48_000;
         let mut s = Segmenter::new(rate);
         let n = |secs: f32| (rate as f32 * secs) as usize;
-        s.push(&vec![0.2; n(5.0)]);
+        s.push(&vec![0.2; n(7.0)]);
         s.push(&vec![0.0; n(0.6)]);
         s.push(&vec![0.2; n(1.0)]);
         let seg = s.take_segment().expect("cut");
-        assert!((seg.len() as f32 / rate as f32 - 5.3).abs() < 0.03);
+        assert!((seg.len() as f32 / rate as f32 - 7.3).abs() < 0.03);
+    }
+
+    #[test]
+    fn sentence_endings_in_several_scripts() {
+        assert!(ends_sentence("We ship on Friday."));
+        assert!(ends_sentence("Really?  "));
+        assert!(ends_sentence("He said \"stop.\""));
+        assert!(ends_sentence("明日出荷します。"));
+        assert!(ends_sentence("हम कल चलेंगे।"));
+        assert!(!ends_sentence("And so my fellow Americans, ask not"));
+        assert!(!ends_sentence("what your country can do for you,"));
+        assert!(!ends_sentence(""));
     }
 
     #[test]
@@ -600,11 +725,15 @@ mod tests {
         assert!(!repeats_previous("the review", &prev), "too short to judge");
     }
 
-    /// Records each call; returns "seg N" (or fails on call `fail_on`).
+    type Calls = Arc<Mutex<Vec<(f32, SegmentHint)>>>;
+
+    /// Records each call. Returns `script[n]` for call n when given, else
+    /// "Segment number N."; fails on call `fail_on`.
     #[derive(Clone)]
     struct Fake {
-        calls: Arc<Mutex<Vec<(f32, SegmentHint)>>>,
+        calls: Calls,
         fail_on: Option<usize>,
+        script: Vec<&'static str>,
     }
 
     impl Fake {
@@ -612,12 +741,21 @@ mod tests {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 fail_on,
+                script: Vec::new(),
+            }
+        }
+
+        fn scripted(script: Vec<&'static str>) -> Self {
+            Self {
+                script,
+                ..Self::new(None)
             }
         }
 
         fn func(&self) -> impl FnMut(&AudioChunk, &SegmentHint) -> Result<Transcript> + Send {
             let calls = Arc::clone(&self.calls);
             let fail_on = self.fail_on;
+            let script = self.script.clone();
             move |chunk, hint| {
                 let mut calls = calls.lock().unwrap();
                 calls.push((chunk.duration_secs() as f32, hint.clone()));
@@ -625,8 +763,12 @@ mod tests {
                 if Some(n) == fail_on {
                     return Err(VoxError::Transcription("boom".into()));
                 }
+                let text = script
+                    .get(n - 1)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("Segment number {n}."));
                 Ok(Transcript {
-                    text: format!("Segment number {n}."),
+                    text,
                     language: Some("en".into()),
                 })
             }
@@ -634,12 +776,15 @@ mod tests {
     }
 
     fn two_sentences_and_a_tail() -> Vec<f32> {
-        let mut a = tone(4.5);
-        a.extend(quiet(0.6));
-        a.extend(tone(4.5));
-        a.extend(quiet(0.6));
-        a.extend(tone(1.0));
-        a
+        concat(&[tone(6.5), quiet(0.6), tone(6.5), quiet(0.6), tone(1.0)])
+    }
+
+    fn wait_for_calls(calls: &Calls, n: usize) {
+        // Generous deadline for loaded CI machines; normally ~one poll.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while calls.lock().unwrap().len() < n && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
@@ -650,12 +795,7 @@ mod tests {
         for chunk in two_sentences_and_a_tail().chunks(RATE as usize / 2) {
             tap.push(chunk);
         }
-        // Let the worker catch up as it would during real speech (generous
-        // deadline for loaded CI machines; normally ~one poll interval).
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while fake.calls.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        wait_for_calls(&fake.calls, 2);
         // ...and confirm it doesn't jump ahead and cut the unfinished tail.
         std::thread::sleep(POLL * 2);
         let segments_before_stop = fake.calls.lock().unwrap().len();
@@ -668,7 +808,7 @@ mod tests {
         let summed: f32 = fake.calls.lock().unwrap().iter().map(|c| c.0).sum();
         assert!((out.audio_ms as f32 / 1000.0 - summed).abs() < 0.01);
         assert!(
-            out.audio_ms > 9_000,
+            out.audio_ms > 13_000,
             "all speech counted, got {}",
             out.audio_ms
         );
@@ -689,27 +829,107 @@ mod tests {
     }
 
     #[test]
+    fn a_fragment_is_redone_together_with_what_follows() {
+        // The JFK case: a dramatic pause mid-sentence. The first attempt
+        // doesn't end a sentence, so it's dropped and its audio is decoded
+        // again with the next phrase.
+        let fake = Fake::scripted(vec![
+            "And so my fellow Americans, ask not",
+            "And so my fellow Americans, ask not what your country can do for you.",
+            "Ask what you can do for your country.",
+        ]);
+        let tap = LiveTap::new(RATE);
+        let session = StreamingSession::start(tap.clone(), fake.func());
+        for chunk in two_sentences_and_a_tail().chunks(RATE as usize / 2) {
+            tap.push(chunk);
+        }
+        wait_for_calls(&fake.calls, 2);
+        std::thread::sleep(POLL * 2);
+        let out = session.finish().unwrap();
+
+        assert_eq!(
+            out.transcript.text,
+            "And so my fellow Americans, ask not what your country can do for you. \
+             Ask what you can do for your country."
+        );
+        assert_eq!(out.segments, 2, "the dropped attempt doesn't count");
+        assert_eq!(out.segments_while_speaking, 1);
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].0 > calls[0].0 + 6.0, "retry covers both phrases");
+        assert_eq!(calls[1].1, SegmentHint::default(), "nothing kept yet");
+        // Speech is counted once, and the work of the dropped attempt too.
+        assert!((out.audio_ms as f32 / 1000.0 - (calls[1].0 + calls[2].0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn unpunctuated_speech_is_still_kept_past_the_soft_max() {
+        // A model or language that never punctuates mustn't stop streaming:
+        // segments just grow to ~12 s.
+        let fake = Fake::scripted(vec!["no punctuation here"; 10]);
+        let tap = LiveTap::new(RATE);
+        tap.push(&concat(&[
+            tone(6.5),
+            quiet(0.6),
+            tone(6.5),
+            quiet(0.6),
+            tone(3.0),
+        ]));
+        let session = StreamingSession::start(tap.clone(), fake.func());
+        wait_for_calls(&fake.calls, 2);
+        std::thread::sleep(POLL * 2);
+        let out = session.finish().unwrap();
+        assert_eq!(out.segments_while_speaking, 1, "kept at the 13.9 s pause");
+        assert_eq!(out.segments, 2);
+    }
+
+    #[test]
+    fn the_tail_is_never_deferred() {
+        // Second phrase is deferred while speaking (no full stop yet); at
+        // stop, everything after the kept first sentence is decoded once
+        // and kept even though it doesn't end a sentence either.
+        let fake = Fake::scripted(vec!["Done.", "and then we", "and then we stopped"]);
+        let tap = LiveTap::new(RATE);
+        let session = StreamingSession::start(tap.clone(), fake.func());
+        tap.push(&two_sentences_and_a_tail());
+        wait_for_calls(&fake.calls, 2);
+        let out = session.finish().unwrap();
+        assert_eq!(out.transcript.text, "Done. and then we stopped");
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert!(
+            calls[2].0 > calls[1].0,
+            "the tail includes the deferred phrase"
+        );
+    }
+
+    #[test]
     fn finish_right_away_transcribes_everything_in_order() {
         let fake = Fake::new(None);
         let tap = LiveTap::new(RATE);
         tap.push(&two_sentences_and_a_tail());
         let out = StreamingSession::start(tap, fake.func()).finish().unwrap();
-        assert_eq!(out.segments, 3);
-        assert!(out.transcript.text.ends_with("Segment number 3."));
+        assert!(out.segments >= 1);
+        assert!(out.transcript.text.starts_with("Segment number 1."));
     }
 
     #[test]
     fn a_failed_segment_falls_back_to_one_whole_pass() {
         let fake = Fake::new(Some(2));
         let tap = LiveTap::new(RATE);
+        let session = StreamingSession::start(tap.clone(), fake.func());
         tap.push(&two_sentences_and_a_tail());
-        let out = StreamingSession::start(tap, fake.func()).finish().unwrap();
+        wait_for_calls(&fake.calls, 2);
+        let out = session.finish().unwrap();
         assert!(out.fell_back);
-        assert_eq!(out.transcript.text, "Segment number 3.");
         let calls = fake.calls.lock().unwrap();
         let whole = calls.last().unwrap();
-        assert!(whole.0 > 10.0, "fallback covers the whole clip");
+        assert!(whole.0 > 14.0, "fallback covers the whole clip");
         assert_eq!(whole.1, SegmentHint::default());
+        assert_eq!(
+            out.transcript.text,
+            format!("Segment number {}.", calls.len())
+        );
     }
 
     #[test]

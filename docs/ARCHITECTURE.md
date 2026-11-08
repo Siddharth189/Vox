@@ -31,11 +31,18 @@ paste at the cursor.
    dictation, so a draining worker never sees the next dictation's audio). A
    worker thread polls it every 150 ms, and a pure `Segmenter` cuts it in the
    middle of the first pause (400 ms below 10% of the segment's 95th-percentile
-   level) at least 4 s in, takes 200 ms pauses after 12 s, and cuts at the
+   level) at least 6 s in, takes 200 ms pauses after 12 s, and cuts at the
    quietest window by 20 s regardless. Each segment goes through the usual
    trim/resample/silence gate and is transcribed with a `SegmentHint`: the last
    200 characters so far as Whisper's prompt (after the dictionary), and the
    language detected in the first segment when the input language is `auto`.
+   A pause isn't always a sentence end: decoded alone, the fragment "And so my
+   fellow Americans, ask not" (JFK's pause for emphasis) came back as "asked
+   not". So a segment is kept only if Whisper ends it with sentence
+   punctuation (`ends_sentence`, any script). Otherwise the cut is deferred
+   and the audio is decoded again, longer, at the next pause; from 12 s on it
+   is kept regardless. The redo costs CPU while the user is still talking, not
+   wait time. At stop, the tail is decoded in one piece.
    On stop, `Pipeline::prepare_streamed` re-checks privacy, then finishes the
    session: only the tail since the last pause is left (about 2 s of speech on
    real recordings). A segment that is only an echo of the prompt is dropped.
