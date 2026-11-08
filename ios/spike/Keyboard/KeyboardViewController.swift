@@ -1,9 +1,12 @@
+import Network
 import UIKit
 
-/// Proves the two things the real keyboard depends on: exchanging data with
-/// the app through the App Group, and typing into another app's text field.
+/// Proves the two things the real keyboard depends on: talking to the app
+/// over loopback, and typing into another app's text field.
 final class KeyboardViewController: UIInputViewController {
     private let status = UILabel()
+    private var connection: NWConnection?
+    private var attempt = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -45,20 +48,61 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func runTest() {
-        let access = hasFullAccess ? "Full Access on" : "Full Access OFF"
-        var outcome: String
-
-        if let token = SpikeBox.read(SpikeBox.appFile) {
-            if let problem = SpikeBox.write("ack:\(token)", to: SpikeBox.keyboardFile) {
-                outcome = "Read the token, reply failed: \(problem)"
-            } else {
-                outcome = "Read \(token) and replied"
-            }
-            textDocumentProxy.insertText("Vox spike got \(token) ")
-        } else {
-            outcome = "No token found. Tap Send in the app first."
+        guard hasFullAccess else {
+            status.text = "FAIL: Allow Full Access is off"
+            return
         }
+        guard let port = NWEndpoint.Port(rawValue: SpikeLink.port) else { return }
 
-        status.text = "\(access)\n\(SpikeBox.diagnostics())\n\(outcome)"
+        connection?.cancel()
+        attempt += 1
+        let current = attempt
+        status.text = "Connecting…"
+
+        let link = NWConnection(host: NWEndpoint.Host(SpikeLink.host), port: port, using: .tcp)
+        connection = link
+
+        link.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                self?.exchange(over: link, attempt: current)
+            case .failed(let error), .waiting(let error):
+                self?.finish(attempt: current, message: "FAIL: \(error.localizedDescription)")
+            default:
+                break
+            }
+        }
+        link.start(queue: .main)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            self?.finish(attempt: current, message: "FAIL: the app did not answer in 4s")
+        }
+    }
+
+    private func exchange(over link: NWConnection, attempt current: Int) {
+        link.send(content: Data("ping".utf8), completion: .contentProcessed { _ in })
+        link.receive(minimumIncompleteLength: 1, maximumLength: 128) {
+            [weak self] data, _, _, error in
+            guard let data, let reply = String(data: data, encoding: .utf8) else {
+                let reason = error?.localizedDescription ?? "empty reply"
+                self?.finish(attempt: current, message: "FAIL: \(reason)")
+                return
+            }
+            self?.succeed(attempt: current, reply: reply)
+        }
+    }
+
+    private func succeed(attempt current: Int, reply: String) {
+        guard current == attempt, connection != nil else { return }
+        textDocumentProxy.insertText("Vox link OK: \(reply)\n")
+        finish(attempt: current, message: "PASS: \(reply)")
+    }
+
+    /// Only the first outcome of an attempt counts; later ones are ignored.
+    private func finish(attempt current: Int, message: String) {
+        guard current == attempt, connection != nil else { return }
+        status.text = message
+        connection?.cancel()
+        connection = nil
     }
 }

@@ -25,6 +25,9 @@ targets:
       properties:
         CFBundleDisplayName: Vox Spike
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: Vox Spike tests whether the microphone keeps running in the background.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:

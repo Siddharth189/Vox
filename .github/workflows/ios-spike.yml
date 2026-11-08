@@ -47,17 +47,14 @@ jobs:
           fi
           exit "$status"
 
-      # An unsigned build has no entitlements in its binaries, and the signing
-      # tool on Windows needs them to know an App Group was requested.
-      - name: Embed entitlements
+      - name: Fake-sign binaries
         run: |
           app=build/Build/Products/Release-iphoneos/VoxSpike.app
           ext="$app/PlugIns/VoxSpikeKeyboard.appex"
           test -f "$ext/VoxSpikeKeyboard"
-          ldid -SSpike.entitlements "$ext/VoxSpikeKeyboard"
-          ldid -SSpike.entitlements "$app/VoxSpike"
-          ldid -e "$ext/VoxSpikeKeyboard" | grep -q "group.com.siddharth189.voxspike"
-          ldid -e "$app/VoxSpike" | grep -q "group.com.siddharth189.voxspike"
+          ldid -S "$ext/VoxSpikeKeyboard"
+          ldid -S "$app/VoxSpike"
+          plutil -p "$app/Info.plist" | grep -q '"audio"'
 
       - name: Package IPA
         run: |

@@ -1,3 +1,5 @@
+import AVFoundation
+import Network
 import SwiftUI
 
 @main
@@ -9,70 +11,160 @@ struct VoxSpikeApp: App {
     }
 }
 
-private enum SpikeResult {
-    case notStarted
-    case waiting(String)
-    case passed(String)
-    case failed(String)
+/// Keeps the microphone running so iOS keeps the app alive in the background.
+/// Audio is only counted, never stored or sent anywhere.
+final class MicSession: ObservableObject {
+    @Published private(set) var status = "Off"
+    @Published private(set) var buffers = 0
+
+    private let engine = AVAudioEngine()
+
+    var isRunning: Bool { engine.isRunning }
+
+    func start() {
+        AVAudioApplication.requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                if granted {
+                    self.begin()
+                } else {
+                    self.status = "Microphone permission denied"
+                }
+            }
+        }
+    }
+
+    private func begin() {
+        guard !engine.isRunning else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, options: [.mixWithOthers])
+            try session.setActive(true)
+
+            let input = engine.inputNode
+            input.removeTap(onBus: 0)
+            input.installTap(
+                onBus: 0,
+                bufferSize: 4096,
+                format: input.outputFormat(forBus: 0)
+            ) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.buffers += 1 }
+            }
+            engine.prepare()
+            try engine.start()
+            status = "Running"
+        } catch {
+            status = "Failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+final class LinkServer: ObservableObject {
+    @Published private(set) var state = "Not started"
+    @Published private(set) var foregroundPings = 0
+    @Published private(set) var backgroundPings = 0
+
+    private var listener: NWListener?
+
+    /// Set by the view so replies can report the microphone's progress.
+    var micReport: () -> String = { "" }
+
+    func start() {
+        guard listener == nil, let port = NWEndpoint.Port(rawValue: SpikeLink.port) else {
+            return
+        }
+        do {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: port)
+
+            let listener = try NWListener(using: parameters)
+            listener.stateUpdateHandler = { [weak self] newState in
+                self?.update(newState)
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.handle(connection)
+            }
+            self.listener = listener
+            listener.start(queue: .main)
+        } catch {
+            state = "Failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func update(_ newState: NWListener.State) {
+        switch newState {
+        case .ready:
+            state = "Listening"
+        case .failed(let error):
+            state = "Failed: \(error.localizedDescription)"
+            listener?.cancel()
+            listener = nil
+        case .cancelled:
+            state = "Stopped"
+        default:
+            break
+        }
+    }
+
+    private func handle(_ connection: NWConnection) {
+        connection.start(queue: .main)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64) {
+            [weak self] _, _, _, _ in
+            guard let self else { return }
+            let inBackground = UIApplication.shared.applicationState == .background
+            if inBackground {
+                self.backgroundPings += 1
+            } else {
+                self.foregroundPings += 1
+            }
+            let mode = inBackground ? "background" : "foreground"
+            let reply = "app=\(mode) \(self.micReport())"
+            connection.send(
+                content: Data(reply.utf8),
+                completion: .contentProcessed { _ in connection.cancel() }
+            )
+        }
+    }
 }
 
 struct ContentView: View {
-    @State private var sent = ""
-    @State private var result = SpikeResult.notStarted
+    @StateObject private var mic = MicSession()
+    @StateObject private var server = LinkServer()
     @State private var typed = ""
-
-    private let poll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Form {
-            Section("1. Signing") {
-                Text(SpikeBox.diagnostics())
-                    .font(.footnote.monospaced())
+            Section("1. Start") {
+                Button("Start mic session") { mic.start() }
+                Text("Mic: \(mic.status), buffers: \(mic.buffers)")
+                Text("Link: \(server.state)")
             }
-            Section("2. Send a token") {
-                Button("Send token to keyboard", action: send)
-                if !sent.isEmpty {
-                    Text(sent).font(.footnote.monospaced())
-                }
-            }
-            Section("3. Switch to Vox Spike Keyboard, tap Run test") {
+            .font(.footnote.monospaced())
+            Section("2. Switch to Vox Spike Keyboard, tap Run test") {
                 TextField("Tap here, then use the globe key", text: $typed, axis: .vertical)
             }
             Section("Result") {
-                resultView
+                result(
+                    "Keyboard reached app",
+                    passed: server.foregroundPings + server.backgroundPings > 0
+                )
+                result("Reached app in background", passed: server.backgroundPings > 0)
+                Text("Foreground pings: \(server.foregroundPings)")
+                Text("Background pings: \(server.backgroundPings)")
             }
         }
-        .onReceive(poll) { _ in check() }
-    }
-
-    @ViewBuilder
-    private var resultView: some View {
-        switch result {
-        case .notStarted:
-            Text("Not started")
-        case .waiting(let message):
-            Text(message)
-        case .passed(let message):
-            Text("PASS: \(message)").foregroundStyle(.green).bold()
-        case .failed(let message):
-            Text("FAIL: \(message)").foregroundStyle(.red).bold()
+        .onAppear {
+            server.micReport = { [weak mic] in
+                guard let mic else { return "mic=gone" }
+                return "mic=\(mic.isRunning ? "on" : "off") buffers=\(mic.buffers)"
+            }
+            server.start()
         }
     }
 
-    private func send() {
-        let token = "vox-\(UUID().uuidString.prefix(8))"
-        if let problem = SpikeBox.write(token, to: SpikeBox.appFile) {
-            result = .failed(problem)
-            return
-        }
-        sent = token
-        result = .waiting("Waiting for the keyboard")
-    }
-
-    private func check() {
-        guard !sent.isEmpty, SpikeBox.read(SpikeBox.keyboardFile) == "ack:\(sent)" else {
-            return
-        }
-        result = .passed("the keyboard received the token and replied")
+    private func result(_ title: String, passed: Bool) -> some View {
+        Text("\(passed ? "PASS" : "Waiting"): \(title)")
+            .foregroundStyle(passed ? .green : .secondary)
+            .bold(passed)
     }
 }
