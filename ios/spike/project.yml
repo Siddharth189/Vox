@@ -27,7 +27,7 @@ targets:
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
-        NSMicrophoneUsageDescription: Vox Spike tests whether the microphone keeps running in the background.
+        NSMicrophoneUsageDescription: Vox Spike records your speech while you hold the keyboard's talk button.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:
