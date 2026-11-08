@@ -157,6 +157,7 @@ window.VoxHistory = {
       detailEl.innerHTML = `
         <div class="muted" style="font-size:0.85rem">${escapeHtml(record.app_name || "")} &middot; ${fmtDate(record.created_at_ms)} &middot; ${escapeHtml(record.format || "")} &middot; ${escapeHtml(record.privacy || "")}</div>
         <div style="margin:0.5rem 0 1rem;font-size:1rem">${escapeHtml(record.final_text || "")}</div>
+        ${record.rejected ? `<div class="muted" style="margin:-0.5rem 0 1rem;font-size:0.85rem">Part of this dictation wasn't inserted (decoded as ${escapeHtml(record.rejected)}).</div>` : ""}
 
         <div class="field-title" style="margin-bottom:0.5rem">Latency</div>
         <div class="latency-row">

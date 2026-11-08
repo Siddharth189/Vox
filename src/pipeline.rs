@@ -62,8 +62,10 @@ pub struct PreparedReport {
     pub audio_ms: u64,
     /// Whisper's mean token probability for the transcript, when known.
     pub confidence: Option<f32>,
-    /// Why nothing was inserted although the user spoke, e.g. "Arabic
-    /// script" for speech Whisper decoded in a language the user doesn't use.
+    /// Speech that was thrown away rather than inserted, e.g. "Arabic
+    /// script" for speech Whisper decoded in a language the user doesn't
+    /// use. With empty `processed_text`, the whole dictation; otherwise a
+    /// part of a streamed one.
     pub rejected: Option<String>,
 }
 
@@ -218,7 +220,8 @@ impl Pipeline {
             latency,
             audio_ms,
             confidence,
-            rejected: None,
+            // Set with text too when part of a streamed dictation was lost.
+            rejected: transcript.rejected,
         }
     }
 
@@ -391,6 +394,30 @@ mod tests {
             report.latency.total_ms,
             report.latency.privacy_ms + report.latency.transcribe_ms + report.latency.process_ms
         );
+    }
+
+    #[test]
+    fn partly_lost_streamed_dictation_is_inserted_and_flagged() {
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new("unused")),
+            Box::new(FakeTextProcessor::passthrough()),
+            Box::new(FakeTextInjector::new()),
+        );
+        let tap = crate::audio::LiveTap::new(16_000);
+        tap.push(&vec![0.2; 16_000 * 2]);
+        let session = StreamingSession::start(tap, |_: &AudioChunk, _: &stt::SegmentHint| {
+            Ok(Transcript {
+                text: "what was caught".into(),
+                rejected: Some("Arabic script".into()),
+                ..Transcript::default()
+            })
+        });
+        let report = pipeline
+            .prepare_streamed(session, ctx_with_privacy(Privacy::LocalOnly), Mode::Auto)
+            .unwrap();
+        assert_eq!(report.processed_text, "what was caught");
+        assert_eq!(report.rejected.as_deref(), Some("Arabic script"));
     }
 
     #[test]
