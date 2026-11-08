@@ -1,0 +1,73 @@
+name: iOS spike
+
+on:
+  push:
+    paths:
+      - "ios/spike/**"
+      - ".github/workflows/ios-spike.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    name: build unsigned IPA
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
+        working-directory: ios/spike
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install tools
+        run: brew install xcodegen ldid
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build without signing
+        run: |
+          set -o pipefail
+          status=0
+          xcodebuild build \
+            -project VoxSpike.xcodeproj \
+            -scheme VoxSpike \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" 2>&1 | tee build.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            # Annotations stay readable without signing in to download logs.
+            grep -E "error:|BUILD FAILED" build.log | sort -u | head -20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit "$status"
+
+      # An unsigned build has no entitlements in its binaries, and the signing
+      # tool on Windows needs them to know an App Group was requested.
+      - name: Embed entitlements
+        run: |
+          app=build/Build/Products/Release-iphoneos/VoxSpike.app
+          ext="$app/PlugIns/VoxSpikeKeyboard.appex"
+          test -f "$ext/VoxSpikeKeyboard"
+          ldid -SSpike.entitlements "$ext/VoxSpikeKeyboard"
+          ldid -SSpike.entitlements "$app/VoxSpike"
+          ldid -e "$ext/VoxSpikeKeyboard" | grep -q "group.com.siddharth189.voxspike"
+          ldid -e "$app/VoxSpike" | grep -q "group.com.siddharth189.voxspike"
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/VoxSpike.app Payload/
+          zip -qry VoxSpike.ipa Payload
+          unzip -l VoxSpike.ipa | grep -q "PlugIns/VoxSpikeKeyboard.appex/VoxSpikeKeyboard"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: VoxSpike-ipa
+          path: ios/spike/VoxSpike.ipa
+          if-no-files-found: error
