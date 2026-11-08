@@ -358,8 +358,8 @@ No. The default model transcribes a short sentence in well under a second on a l
 Apple Silicon, Whisper uses the GPU automatically.
 
 **Do I need Ollama or another LLM?**
-No. Built-in cleanup handles filler words, spacing, capitalization, your dictionary, voice
-commands, and snippets. An LLM adds grammar fixes, rewriting, and translation.
+No. Built-in cleanup handles filler words, repeated words ("so so", "I, I think"), spacing,
+capitalization, your dictionary, voice commands, and snippets. An LLM adds grammar fixes, rewriting, and translation.
 
 **`Ctrl+.` conflicts with a shortcut I use.**
 Pick a new one under **Settings > Behavior > Dictation hotkey**: click it, then press your new

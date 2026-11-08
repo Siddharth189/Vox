@@ -259,19 +259,46 @@ pub fn collapse_repeated_sentences(text: &str) -> String {
         sentences.push(rest);
     }
 
+    const MAX_GROUP: usize = 4;
+    const MIN_GROUP_WORDS: usize = 4;
+    let n = sentences.len();
+    let same = |a: usize, b: usize| sentences[a].eq_ignore_ascii_case(sentences[b]);
     let mut out: Vec<&str> = Vec::new();
     let mut collapsed = false;
     let mut i = 0;
-    while i < sentences.len() {
-        let mut j = i + 1;
-        while j < sentences.len() && sentences[j].eq_ignore_ascii_case(sentences[i]) {
-            j += 1;
+    'outer: while i < n {
+        // Smallest period first, so "A. A. A. A." is one sentence repeated,
+        // not a pair repeated.
+        for k in 1..=MAX_GROUP {
+            let min_reps = if k == 1 { 3 } else { 2 };
+            if i + k * min_reps > n {
+                break;
+            }
+            let mut reps = 1;
+            while i + (reps + 1) * k <= n && (0..k).all(|j| same(i + j, i + reps * k + j)) {
+                reps += 1;
+            }
+            let words: usize = sentences[i..i + k]
+                .iter()
+                .map(|s| s.split_whitespace().count())
+                .sum();
+            if reps < min_reps || (k > 1 && words < MIN_GROUP_WORDS) {
+                continue;
+            }
+            out.extend_from_slice(&sentences[i..i + k]);
+            collapsed = true;
+            i += reps * k;
+            // The loop's last, truncated copy: whatever is left is the start
+            // of the group.
+            let rest = sentences[i..].join(" ").to_lowercase();
+            let group = sentences[i - k..i].join(" ").to_lowercase();
+            if !rest.is_empty() && group.starts_with(&rest) {
+                i = n;
+            }
+            continue 'outer;
         }
-        let run = j - i;
-        let keep = if run >= 3 { 1 } else { run };
-        collapsed |= keep != run;
-        out.extend(std::iter::repeat_n(sentences[i], keep));
-        i = j;
+        out.push(sentences[i]);
+        i += 1;
     }
     if collapsed {
         out.join(" ")
@@ -431,6 +458,28 @@ mod tests {
     fn collapses_decoder_loops_only() {
         assert_eq!(collapse_repeated_sentences("Yes. Yes. Yes. Yes."), "Yes.");
         assert_eq!(collapse_repeated_sentences("Yes. Yes."), "Yes. Yes.");
+        // Measured: a real 4.8 s dictation came back like this.
+        assert_eq!(
+            collapse_repeated_sentences(
+                "Should I run it now since PR is a Dane? What should I do? Should I merge it?                  Should I run it now since PR is a Dane? What should I do? Should I merge it?                  Should I run it now since PR is a Dane? What should I do? Should I merge it?                  Should I"
+            ),
+            "Should I run it now since PR is a Dane? What should I do? Should I merge it?"
+        );
+        assert_eq!(
+            collapse_repeated_sentences(
+                "We ship today. Then we rest. We ship today. Then we rest."
+            ),
+            "We ship today. Then we rest."
+        );
+        // Too short to call a loop, and not repeated as a whole group.
+        assert_eq!(
+            collapse_repeated_sentences("Thanks! Bye. Thanks! Bye."),
+            "Thanks! Bye. Thanks! Bye."
+        );
+        assert_eq!(
+            collapse_repeated_sentences("We ship today. Then we rest. We ship today."),
+            "We ship today. Then we rest. We ship today."
+        );
         assert_eq!(
             collapse_repeated_sentences("Ship it. Thanks! Thanks! Thanks! Bye"),
             "Ship it. Thanks! Bye"

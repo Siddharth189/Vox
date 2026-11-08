@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::model::{EnrichedRequest, Format, ProcessedText};
 use crate::process::dictionary::normalize_processed_text;
+use crate::process::repeats::collapse_repeats;
 use crate::process::TextProcessor;
 
 /// Pure hesitation sounds. Deliberately excludes words that are also real
@@ -59,7 +60,13 @@ pub fn clean_text(
     aliases: &HashMap<String, Vec<String>>,
 ) -> String {
     let without_fillers = remove_fillers(raw);
-    let spaced = tidy_spacing(&without_fillers);
+    // Shell commands repeat words on purpose ("echo echo", "git add add.js").
+    let deduped = if format == Format::Shell {
+        without_fillers
+    } else {
+        collapse_repeats(&without_fillers)
+    };
+    let spaced = tidy_spacing(&deduped);
     let mut text = normalize_processed_text(&spaced, dictionary, aliases);
 
     match format {
@@ -290,6 +297,23 @@ mod tests {
             ),
             "Deploy to Kubernetes today"
         );
+    }
+
+    #[test]
+    fn spoken_repeats_are_tidied() {
+        // A real dictation (the words were repeated on purpose).
+        assert_eq!(
+            clean(
+                "so that we can you know this PR before doing it so. So what I was thinking is to, um, to create a image out of the build",
+                Format::CleanProse
+            ),
+            "So that we can you know this PR before doing it. So what I was thinking is to create a image out of the build"
+        );
+        assert_eq!(
+            clean("so so, the the cache is stale", Format::CleanProse),
+            "So, the cache is stale"
+        );
+        assert_eq!(clean("echo echo hello", Format::Shell), "echo echo hello");
     }
 
     #[test]
