@@ -69,7 +69,7 @@ echo "speed OK: ${factor}x real time (budget ${MAX}x)"
 # transcribed while "speaking". The words must survive the cuts; the wait
 # after stop is reported, not gated (shared runners are too noisy for that).
 # "stt: 640ms after stop | 2 segments, 1 done while speaking"
-sout="$("${VOX}" transcribe "${WAV}" --model "${MODEL}" --stream 2>/dev/null)"
+sout="$("${VOX}" transcribe "${WAV}" --model "${MODEL}" --warm --stream 2>/dev/null)"
 echo "${sout}"
 if ! grep -qi "ask not what your country" <<<"${sout}"; then
   echo "::error title=Streamed transcript wrong::expected the JFK quote, got: $(grep '^raw:' <<<"${sout}")"

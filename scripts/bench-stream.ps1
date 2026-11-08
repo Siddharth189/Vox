@@ -71,8 +71,8 @@ function Get-Repeats([string]$s, [string]$reference) {
 # whisper.cpp logs to stderr; Windows PowerShell would turn that into
 # errors under 'Stop'.
 $ErrorActionPreference = 'Continue'
-$one = & $Vox transcribe $wav --model $Model 2>$null
-$stream = & $Vox transcribe $wav --model $Model --stream 2>$null
+$one = & $Vox transcribe $wav --model $Model --warm 2>$null
+$stream = & $Vox transcribe $wav --model $Model --warm --stream 2>$null
 $ErrorActionPreference = 'Stop'
 $oneRaw = Get-Raw $one
 $streamRaw = Get-Raw $stream
