@@ -8,6 +8,13 @@ All notable changes to Vox are listed here. The format follows
 
 ### Added
 
+- **Transcribe while you speak.** Vox cuts the recording at natural pauses and transcribes each
+  piece in the background, so stopping only waits for the last few seconds of speech instead of
+  the whole dictation (previously 3.2 s for 14 s of speech and 9.3 s for 40 s on a 4-core
+  laptop). Each piece continues from the text before it, and if one fails the recording is
+  transcribed in one pass as before. On by default; **Transcribe while you speak** in settings
+  turns it off. `vox transcribe FILE.wav --stream` measures it.
+
 - **Slow-dictation warning.** When a dictation takes longer than you spoke, and much longer
   than usual on your machine, the tray says so and why when it can tell ("on battery: plug in
   for full speed").

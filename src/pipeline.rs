@@ -11,7 +11,7 @@ use crate::model::{
 };
 use crate::privacy::PrivacyPolicy;
 use crate::process::{join_segments, CleanupProcessor, Segment, TextProcessor, VoiceCommands};
-use crate::stt::{self, LocalWhisper, Transcriber};
+use crate::stt::{self, LocalWhisper, StreamingSession, Transcriber};
 
 /// The real pipeline: platform app detection, local Whisper, LLM-or-local
 /// cleanup, and auto-paste (or clipboard-only). Loads and warms up the
@@ -127,36 +127,88 @@ impl Pipeline {
         let transcribe_start = Instant::now();
         let transcript = self.transcriber.transcribe(audio, &ctx)?;
         let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
-        let raw_text = transcript.text.clone();
         let audio_ms = (audio.duration_secs() * 1000.0).round() as u64;
+        let latency =
+            LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0).with_audio(audio_ms);
+        Ok(self.process_transcript(transcript, ctx, mode, latency))
+    }
+
+    /// Like `prepare_with_ctx`, for a dictation transcribed while it was
+    /// recorded. Call once capture has stopped; `ctx` is the app focused
+    /// now. The privacy switch is checked again first: if the user moved to
+    /// a disabled app mid-dictation, the session is dropped (cancelled) and
+    /// its text never goes anywhere. `transcribe_ms` is the wait for the
+    /// rest of the audio, which is what the user actually waits through;
+    /// `stt_work_ms` is Whisper's total time, for speed tracking.
+    pub fn prepare_streamed(
+        &self,
+        session: StreamingSession,
+        ctx: AppContext,
+        mode: Mode,
+    ) -> Result<PreparedReport> {
+        let privacy_start = Instant::now();
+        self.privacy.ensure_allowed(&ctx)?;
+        let privacy_ms = elapsed_ms(privacy_start.elapsed());
+
+        let transcribe_start = Instant::now();
+        let outcome = session.finish()?;
+        let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
+        tracing::debug!(
+            "streamed stt: {} segments ({} while speaking), fell back = {}, \
+             whisper {} ms for {} ms of speech",
+            outcome.segments,
+            outcome.segments_while_speaking,
+            outcome.fell_back,
+            outcome.work_ms,
+            outcome.audio_ms
+        );
+        let mut latency =
+            LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0).with_audio(outcome.audio_ms);
+        latency.streamed_segments = outcome.segments_while_speaking;
+        latency.stt_work_ms = outcome.work_ms;
+        Ok(self.process_transcript(outcome.transcript, ctx, mode, latency))
+    }
+
+    /// Voice commands and cleanup on a finished transcript. `latency`
+    /// arrives with the privacy and transcription stages filled in.
+    fn process_transcript(
+        &self,
+        transcript: Transcript,
+        ctx: AppContext,
+        mode: Mode,
+        latency: LatencyMetrics,
+    ) -> PreparedReport {
+        let raw_text = transcript.text.clone();
+        let audio_ms = latency.audio_ms;
 
         if stt::is_non_speech(&raw_text) {
-            return Ok(PreparedReport {
+            return PreparedReport {
                 app_name: ctx.app_name.clone(),
                 ctx,
                 raw_text,
                 model_text: None,
                 processed_text: String::new(),
-                latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, 0)
-                    .with_audio(audio_ms),
+                latency,
                 audio_ms,
-            });
+            };
         }
 
         let process_start = Instant::now();
         let processed = self.process_segments(&transcript, &ctx, mode);
         let process_ms = elapsed_ms(process_start.elapsed());
 
-        Ok(PreparedReport {
+        let mut latency = latency;
+        latency.process_ms = process_ms;
+        latency.total_ms = latency.privacy_ms + latency.transcribe_ms + process_ms;
+        PreparedReport {
             app_name: ctx.app_name.clone(),
             ctx,
             raw_text,
             model_text: processed.model_text.clone(),
             processed_text: processed.text,
-            latency: LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms)
-                .with_audio(audio_ms),
+            latency,
             audio_ms,
-        })
+        }
     }
 
     /// Cleans up the spoken parts of the transcript and splices in what the
@@ -295,6 +347,51 @@ mod tests {
         let report = pipeline.run(&audio(), Mode::Auto).unwrap();
         assert!(report.prepared.processed_text.is_empty());
         assert_eq!(report.injection.strategy, "skipped");
+    }
+
+    #[test]
+    fn streamed_dictation_is_processed_like_a_clip() {
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new("unused")),
+            Box::new(FakeTextProcessor::returning("Cleaned.")),
+            Box::new(FakeTextInjector::new()),
+        );
+        let tap = crate::audio::LiveTap::new(16_000);
+        tap.push(&vec![0.2; 16_000 * 2]);
+        let session = StreamingSession::start(tap, |_: &AudioChunk, _: &stt::SegmentHint| {
+            Ok(Transcript::new("streamed words"))
+        });
+        let report = pipeline
+            .prepare_streamed(session, ctx_with_privacy(Privacy::LocalOnly), Mode::Auto)
+            .unwrap();
+        assert_eq!(report.raw_text, "streamed words");
+        assert_eq!(report.processed_text, "Cleaned.");
+        assert_eq!(report.audio_ms, 2_000);
+        assert_eq!(report.latency.audio_ms, 2_000);
+        assert_eq!(
+            report.latency.total_ms,
+            report.latency.privacy_ms + report.latency.transcribe_ms + report.latency.process_ms
+        );
+    }
+
+    #[test]
+    fn streamed_dictation_into_disabled_app_is_discarded() {
+        let pipeline = Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            Box::new(FakeTranscriber::new("unused")),
+            Box::new(FakeTextProcessor::passthrough()),
+            Box::new(FakeTextInjector::new()),
+        );
+        let tap = crate::audio::LiveTap::new(16_000);
+        tap.push(&vec![0.2; 16_000 * 2]);
+        let session = StreamingSession::start(tap, |_: &AudioChunk, _: &stt::SegmentHint| {
+            Ok(Transcript::new("secret"))
+        });
+        let err = pipeline
+            .prepare_streamed(session, ctx_with_privacy(Privacy::Disabled), Mode::Auto)
+            .unwrap_err();
+        assert!(matches!(err, crate::error::VoxError::PrivacyBlocked(_)));
     }
 
     #[test]

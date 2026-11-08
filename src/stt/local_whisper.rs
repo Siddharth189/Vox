@@ -8,7 +8,7 @@ use whisper_rs::{
 use crate::audio::{self, TARGET_RATE};
 use crate::error::{Result, VoxError};
 use crate::model::{AppContext, AudioChunk, Transcript};
-use crate::stt::Transcriber;
+use crate::stt::{SegmentHint, Transcriber};
 
 const MAX_INITIAL_PROMPT_LEN: usize = 200;
 
@@ -97,7 +97,7 @@ impl LocalWhisper {
             samples: silence_with_blip,
             sample_rate: TARGET_RATE,
         };
-        let _ = self.run(&chunk.samples);
+        let _ = self.run(&chunk.samples, &SegmentHint::default());
     }
 
     /// The whisper language code to request. whisper.cpp's own default is
@@ -117,7 +117,9 @@ impl LocalWhisper {
         whisper_language_code(lang).or(Some("auto"))
     }
 
-    fn run(&self, samples: &[f32]) -> Result<String> {
+    /// Transcribes 16 kHz mono `samples`. `hint` carries the text and
+    /// language of earlier segments when streaming (empty otherwise).
+    fn run(&self, samples: &[f32], hint: &SegmentHint) -> Result<Transcript> {
         let mut padded;
         let samples = if samples.len() < MIN_AUDIO_SAMPLES {
             padded = samples.to_vec();
@@ -152,7 +154,20 @@ impl LocalWhisper {
         // Each dictation is independent; don't condition on the previous one.
         params.set_no_context(true);
         params.set_suppress_blank(true);
-        params.set_language(self.language_param());
+        let mut language: Option<&str> = self.language_param();
+        let auto_detect = language == Some("auto");
+        if auto_detect {
+            // Keep the language an earlier segment detected: re-detecting on
+            // each few-second segment can flip between related languages.
+            if let Some(code) = hint
+                .language
+                .as_deref()
+                .filter(|c| *c != "auto" && whisper_rs::get_lang_id(c).is_some())
+            {
+                language = Some(code);
+            }
+        }
+        params.set_language(language);
         if let Some(ctx) = audio_ctx_for(samples.len()) {
             params.set_audio_ctx(ctx);
         }
@@ -161,7 +176,8 @@ impl LocalWhisper {
         let secs = samples.len() as f32 / TARGET_RATE as f32;
         params.set_max_tokens((secs * 10.0).ceil() as i32 + 16);
 
-        if let Some(ref prompt) = self.initial_prompt {
+        let prompt = initial_prompt(self.initial_prompt.as_deref(), &hint.previous_text);
+        if let Some(ref prompt) = prompt {
             params.set_initial_prompt(prompt);
         }
 
@@ -190,7 +206,33 @@ impl LocalWhisper {
                 .map_err(|e| VoxError::Transcription(e.to_string()))?;
             text.push_str(&seg);
         }
-        Ok(collapse_repeated_sentences(text.trim()))
+        let detected = if auto_detect && language == Some("auto") {
+            state
+                .full_lang_id_from_state()
+                .ok()
+                .and_then(whisper_rs::get_lang_str)
+                .map(str::to_string)
+        } else {
+            language.filter(|l| *l != "auto").map(str::to_string)
+        };
+        Ok(Transcript {
+            text: collapse_repeated_sentences(text.trim()),
+            language: detected,
+        })
+    }
+}
+
+/// Whisper's prompt is "the text before this audio": the custom dictionary
+/// (so names are spelled right) followed, when streaming, by the end of what
+/// was said so far (so the segment continues the sentence rather than
+/// starting a new one with a capital letter).
+fn initial_prompt(dictionary: Option<&str>, previous_text: &str) -> Option<String> {
+    let previous = previous_text.trim();
+    match (dictionary.filter(|d| !d.is_empty()), previous.is_empty()) {
+        (None, true) => None,
+        (Some(d), true) => Some(d.to_string()),
+        (None, false) => Some(previous.to_string()),
+        (Some(d), false) => Some(format!("{d}. {previous}")),
     }
 }
 
@@ -296,7 +338,25 @@ impl Transcriber for LocalWhisper {
         if audio::is_silent(&audio.samples, audio.sample_rate) {
             return Ok(Transcript::new(""));
         }
-        Ok(Transcript::new(self.run(&audio.samples)?))
+        self.run(&audio.samples, &SegmentHint::default())
+    }
+
+    fn transcribe_segment(
+        &self,
+        audio: &AudioChunk,
+        _ctx: &AppContext,
+        hint: &SegmentHint,
+    ) -> Result<Transcript> {
+        if audio.samples.is_empty() || audio::is_silent(&audio.samples, audio.sample_rate) {
+            return Ok(Transcript::new(""));
+        }
+        if audio.sample_rate != TARGET_RATE {
+            return Err(VoxError::Transcription(format!(
+                "expected sample rate {TARGET_RATE}, got {}",
+                audio.sample_rate
+            )));
+        }
+        self.run(&audio.samples, hint)
     }
 
     fn name(&self) -> &'static str {
@@ -334,6 +394,20 @@ mod tests {
         assert_eq!(
             whisper_language_code("Hinglish / mixed Hindi-English"),
             None
+        );
+    }
+
+    #[test]
+    fn prompt_puts_dictionary_before_previous_text() {
+        assert_eq!(initial_prompt(None, ""), None);
+        assert_eq!(
+            initial_prompt(Some("Vox, CI/CD"), " "),
+            Some("Vox, CI/CD".into())
+        );
+        assert_eq!(initial_prompt(None, "we ship"), Some("we ship".into()));
+        assert_eq!(
+            initial_prompt(Some("Vox"), "we ship"),
+            Some("Vox. we ship".into())
         );
     }
 

@@ -47,7 +47,8 @@ window.VoxHistory = {
     // overhead, so they don't say how fast Whisper runs.
     function speedFactor(lat) {
       if (!lat || (lat.audio_ms || 0) < 1500) return null;
-      return (lat.transcribe_ms || 0) / lat.audio_ms;
+      // Streamed dictations: Whisper's total time, not the wait after stop.
+      return (lat.stt_work_ms || lat.transcribe_ms || 0) / lat.audio_ms;
     }
 
     // Returns HTML (numbers only, nothing user-supplied).
@@ -161,10 +162,10 @@ window.VoxHistory = {
         <div class="latency-row">
           <div class="stat"><div class="stat-label">Total</div><div class="stat-value">${fmtSeconds(lat.total_ms || 0)}</div></div>
           <div class="stat"><div class="stat-label">Privacy</div><div class="stat-value">${fmtSeconds(lat.privacy_ms || 0)}</div></div>
-          <div class="stat"><div class="stat-label">Whisper</div><div class="stat-value">${fmtSeconds(lat.transcribe_ms || 0)}</div></div>
+          <div class="stat" title="${lat.streamed_segments ? `${lat.streamed_segments} segment(s) were transcribed while you spoke; this is only the wait after you stopped` : ""}"><div class="stat-label">Whisper${lat.streamed_segments ? " (streamed)" : ""}</div><div class="stat-value">${fmtSeconds(lat.transcribe_ms || 0)}</div></div>
           <div class="stat"><div class="stat-label">LLM</div><div class="stat-value">${fmtSeconds(lat.process_ms || 0)}</div></div>
           <div class="stat"><div class="stat-label">Paste</div><div class="stat-value">${fmtSeconds(lat.inject_ms || 0)}</div></div>
-          <div class="stat" title="${lat.audio_ms ? `Whisper took ${fmtSeconds(lat.transcribe_ms || 0)} for ${fmtSeconds(lat.audio_ms)} of speech` : "Not measured for this dictation"}"><div class="stat-label">Speed</div><div class="stat-value">${fmtSpeed(speedFactor(lat))}</div></div>
+          <div class="stat" title="${lat.audio_ms ? `Whisper took ${fmtSeconds(lat.stt_work_ms || lat.transcribe_ms || 0)} for ${fmtSeconds(lat.audio_ms)} of speech` : "Not measured for this dictation"}"><div class="stat-label">Speed</div><div class="stat-value">${fmtSpeed(speedFactor(lat))}</div></div>
         </div>
 
         <div class="stage-row">

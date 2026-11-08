@@ -221,6 +221,15 @@ jobs:
         shell: bash
         run: scripts/bench.sh target/release/vox.exe "${{ runner.temp }}/vox-bench"
 
+      # Streamed vs one-pass on a 40 s paragraph (synthesized on the runner):
+      # fails on repeated sentences, comma pauses split into sentences, or
+      # drifting words. Uses the model bench.sh just downloaded.
+      - name: Streaming accuracy (long dictation)
+        shell: pwsh
+        run: >-
+          scripts/bench-stream.ps1 -Vox target/release/vox.exe
+          -Model "${{ runner.temp }}/vox-bench/data/models/ggml-base-q5_1.bin"
+
       - name: vox smoke test
         shell: pwsh
         run: |

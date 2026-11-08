@@ -162,6 +162,24 @@ pub struct LatencyMetrics {
     /// 0 in records from before Vox measured it.
     #[serde(default)]
     pub audio_ms: u64,
+    /// Speech segments already transcribed while the user was still
+    /// talking (0 = transcribed in one pass after they stopped). When
+    /// nonzero, `transcribe_ms` is only the wait after they stopped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub streamed_segments: u32,
+    /// Time Whisper actually spent on a streamed dictation, summed over its
+    /// segments (most of it while the user was still talking). 0 when not
+    /// streamed: then `transcribe_ms` is that time.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub stt_work_ms: u64,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 impl LatencyMetrics {
@@ -173,6 +191,18 @@ impl LatencyMetrics {
             inject_ms: 0,
             total_ms: privacy_ms + transcribe_ms + process_ms,
             audio_ms: 0,
+            streamed_segments: 0,
+            stt_work_ms: 0,
+        }
+    }
+
+    /// Time Whisper spent: for a streamed dictation the total across its
+    /// segments, otherwise the transcription step itself.
+    pub fn stt_compute_ms(&self) -> u64 {
+        if self.stt_work_ms > 0 {
+            self.stt_work_ms
+        } else {
+            self.transcribe_ms
         }
     }
 

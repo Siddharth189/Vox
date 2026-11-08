@@ -1,12 +1,27 @@
 mod local_whisper;
+pub mod streaming;
 
 pub use local_whisper::LocalWhisper;
+pub use streaming::{SegmentHint, StreamOutcome, StreamingSession};
 
 use crate::error::Result;
 use crate::model::{AppContext, AudioChunk, Transcript};
 
 pub trait Transcriber: Send + Sync {
     fn transcribe(&self, audio: &AudioChunk, ctx: &AppContext) -> Result<Transcript>;
+
+    /// One segment of a dictation streamed while the user speaks, with what
+    /// came before it. Transcribers that can't use the hint ignore it.
+    fn transcribe_segment(
+        &self,
+        audio: &AudioChunk,
+        ctx: &AppContext,
+        hint: &SegmentHint,
+    ) -> Result<Transcript> {
+        let _ = hint;
+        self.transcribe(audio, ctx)
+    }
+
     fn name(&self) -> &'static str;
 }
 
