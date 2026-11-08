@@ -470,7 +470,13 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     if settings.sound_cues {
                         cue::play(Cue::Cancel);
                     }
-                    status = "Vox: didn't catch that".into();
+                    status = match report.rejected {
+                        Some(ref why) => {
+                            tracing::info!("discarded dictation ({why})");
+                            "Vox: didn't catch that - try a full sentence".into()
+                        }
+                        None => "Vox: didn't catch that".into(),
+                    };
                     set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
                     set_status(&tray, &status_item, &status);
                 } else if let Some(ref p) = pipeline {
@@ -529,6 +535,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     injected_chars: injection.injected_chars,
                     latency: latency.clone(),
                     corrected_text: None,
+                    stt_confidence: report.confidence,
                 };
                 let slow = speed::check(&latency, &history::load_history());
                 if let Err(e) = history::append_record(record) {
@@ -538,15 +545,24 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     tracing::warn!("stats update failed: {e}");
                 }
 
+                let llm = pipeline.as_ref().and_then(|p| p.llm_status());
                 tracing::info!(
-                    "{} via {} | {} chars | stt={}ms cleanup={}ms inject={}ms total={}ms",
+                    "{} via {} | {} chars | stt={}ms cleanup={}ms inject={}ms total={}ms | confidence={} llm={}",
                     report.app_name,
                     injection.strategy,
                     injection.injected_chars,
                     latency.transcribe_ms,
                     latency.process_ms,
                     latency.inject_ms,
-                    latency.total_ms
+                    latency.total_ms,
+                    report
+                        .confidence
+                        .map_or_else(|| "-".to_string(), |c| format!("{c:.2}")),
+                    match llm {
+                        None => "off",
+                        Some(true) => "used",
+                        Some(false) => "unreachable",
+                    }
                 );
 
                 status = match slow {
@@ -560,7 +576,15 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                         );
                         speed::status_text(slow, on_battery)
                     }
-                    None => status_for_strategy(&injection.strategy).to_string(),
+                    None => {
+                        let pasted = status_for_strategy(&injection.strategy);
+                        // Only replace the plain "inserted" message: the
+                        // clipboard and permission hints matter more.
+                        match llm_off_status(llm, &settings.output_language) {
+                            Some(s) if pasted == STATUS_INSERTED => s.to_string(),
+                            _ => pasted.to_string(),
+                        }
+                    }
                 };
                 set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
                 set_status(&tray, &status_item, &status);
@@ -842,11 +866,28 @@ const PASTE_HINT: &str = "Vox: on clipboard (Cmd+V)";
 #[cfg(not(target_os = "macos"))]
 const PASTE_HINT: &str = "Vox: on clipboard (Ctrl+V)";
 
+const STATUS_INSERTED: &str = "Vox: inserted at cursor";
+
+/// The status after a paste when LLM cleanup is turned on but its server
+/// isn't answering, so the user knows the text skipped polishing (and
+/// translation) instead of wondering why it reads raw.
+fn llm_off_status(llm: Option<bool>, output_language: &str) -> Option<&'static str> {
+    if llm != Some(false) {
+        return None;
+    }
+    let lang = output_language.trim().to_ascii_lowercase();
+    Some(if lang.is_empty() || lang == "auto" {
+        "Vox: inserted unpolished - LLM not running (see vox doctor)"
+    } else {
+        "Vox: inserted untranslated - LLM not running (see vox doctor)"
+    })
+}
+
 fn status_for_strategy(strategy: &str) -> &'static str {
     if strategy.contains("clipboard kept") {
         "Vox: paste sent (clipboard kept)"
     } else if strategy.starts_with("auto-paste") {
-        "Vox: inserted at cursor"
+        STATUS_INSERTED
     } else if strategy.contains("Accessibility") {
         "Vox: clipboard - grant Accessibility"
     } else {
@@ -982,4 +1023,21 @@ fn sd_capsule(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32, r: f32) -> f
     let dx = pax - bax * h;
     let dy = pay - bay * h;
     (dx * dx + dy * dy).sqrt() - r
+}
+
+#[cfg(test)]
+mod llm_status_tests {
+    use super::*;
+
+    #[test]
+    fn status_says_when_llm_was_skipped() {
+        assert_eq!(llm_off_status(None, "English"), None);
+        assert_eq!(llm_off_status(Some(true), "English"), None);
+        assert!(llm_off_status(Some(false), "auto")
+            .unwrap()
+            .contains("unpolished"));
+        assert!(llm_off_status(Some(false), "English")
+            .unwrap()
+            .contains("untranslated"));
+    }
 }

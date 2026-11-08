@@ -22,6 +22,12 @@ use crate::model::{EnrichedRequest, ProcessedText};
 pub trait TextProcessor: Send + Sync {
     fn process(&self, req: &EnrichedRequest) -> Result<ProcessedText>;
     fn name(&self) -> &'static str;
+
+    /// For processors that can use an LLM: whether it's reachable right
+    /// now. `None` = no LLM configured.
+    fn llm_status(&self) -> Option<bool> {
+        None
+    }
 }
 
 pub struct FakeTextProcessor {

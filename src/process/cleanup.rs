@@ -137,6 +137,10 @@ impl TextProcessor for CleanupProcessor {
     fn name(&self) -> &'static str {
         "cleanup"
     }
+
+    fn llm_status(&self) -> Option<bool> {
+        self.llm.as_ref().map(|(_, a)| a.is_available())
+    }
 }
 
 #[cfg(test)]
