@@ -77,8 +77,10 @@ paste at the cursor.
 6. **Process** (`process/`) - `CleanupProcessor` uses the LLM server when a cached,
    background-refreshed probe says it's up with the configured model
    (`cleanup.rs`), and the rule-based `LocalCleanup` otherwise (`local.rs`:
-   filler removal, spacing, capitalization, shell/code-aware formatting,
-   dictionary aliases). The probe never runs on the dictation's critical path:
+   filler removal, spoken repeats (`repeats.rs`: stutters and repeated
+   phrases, restarts across a full stop only where unambiguous, never in
+   shell), spacing, capitalization, shell/code-aware formatting, dictionary
+   aliases). The probe never runs on the dictation's critical path:
    on Windows a connect to a closed localhost port takes ~2 s.
 7. **Inject** (`inject/`) - clipboard + synthesized paste via `enigo`, after
    waiting for the hotkey's modifiers to be physically released (otherwise

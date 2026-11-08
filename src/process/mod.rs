@@ -4,6 +4,7 @@ mod dictionary;
 mod local;
 mod ollama;
 mod prompt;
+mod repeats;
 
 pub use cleanup::{Availability, CleanupProcessor};
 pub use commands::{join_segments, Segment, VoiceCommands};
@@ -15,6 +16,7 @@ pub use ollama::{
 pub use prompt::{
     code_switch_fewshot, effective_system_prompt, fewshot, rewrite_only_user_message,
 };
+pub use repeats::collapse_repeats;
 
 use crate::error::Result;
 use crate::model::{EnrichedRequest, ProcessedText};

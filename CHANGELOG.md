@@ -8,6 +8,12 @@ All notable changes to Vox are listed here. The format follows
 
 ### Added
 
+- **Built-in cleanup tidies spoken repeats.** Without an LLM, "so so what I was thinking",
+  "I, I think" and "we need to, we need to ship" now come out as one copy. Repeats that are
+  usually meant stay ("very very good", "no no", "I know that that works", phone numbers).
+  Across a full stop, only unambiguous restarts are merged ("go to the. The store"); "I think
+  so. So we ship" is left as is.
+
 - **Transcribe while you speak.** Vox cuts the recording at natural pauses and transcribes each
   piece in the background, so stopping only waits for the last few seconds of speech instead of
   the whole dictation (previously 3.2 s for 14 s of speech and 9.3 s for 40 s on a 4-core
@@ -25,6 +31,12 @@ All notable changes to Vox are listed here. The format follows
   from your fix for the dictionary, and learns multi-word mishearings ("visual studio coat").
 - **Speed benchmark in CI and releases** (`scripts/bench.sh`): Windows and Linux builds fail if
   Whisper runs slower than real time.
+
+### Fixed
+
+- **Whisper loops over several sentences are caught.** A short clip could come back as the
+  same three sentences repeated three times plus a cut-off fourth; Vox now keeps one copy, as it
+  already did for a single repeated sentence.
 
 ## [0.3.0] - 2026-11-02
 
