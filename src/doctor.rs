@@ -347,18 +347,16 @@ pub fn run(settings: &Settings) -> DoctorReport {
     } else {
         match check_ollama(&settings.llm_base_url(), &settings.llm_model) {
             OllamaCheck::Ok { model_size_bytes } => {
-                checks.push(ollama_model_fit_check(&settings.llm_model, model_size_bytes));
+                checks.push(ollama_model_fit_check(
+                    &settings.llm_model,
+                    model_size_bytes,
+                ));
             }
-            OllamaCheck::Unreachable => checks.push(Check {
-                name: "ollama".into(),
-                status: CheckStatus::Info,
-                message: "Ollama not running; using built-in cleanup (optional: install Ollama for LLM rewriting)".into(),
-                fix: Some(if which("ollama") {
-                    ollama_start_hint()
-                } else {
-                    install_hint("ollama")
-                }),
-            }),
+            OllamaCheck::Unreachable => checks.push(ollama_unreachable_check(
+                &settings.output_language,
+                &settings.llm_model,
+                which("ollama"),
+            )),
             OllamaCheck::MissingModel => {
                 let pull = settings.llm_model.trim_end_matches(":latest");
                 checks.push(Check {
@@ -722,6 +720,39 @@ fn ollama_start_hint() -> String {
     "ollama serve  # or: systemctl --user start ollama, if you set that up".into()
 }
 
+/// LLM cleanup is turned on but Ollama isn't answering. A warning, not a
+/// note: every dictation silently skips polishing, and translation to the
+/// chosen output language doesn't happen at all.
+fn ollama_unreachable_check(output_language: &str, llm_model: &str, installed: bool) -> Check {
+    let lang = output_language.trim();
+    let translating = !(lang.is_empty() || lang.eq_ignore_ascii_case("auto"));
+    let message = if translating {
+        format!(
+            "LLM cleanup is on but Ollama isn't running: dictations are pasted unpolished \
+             and NOT translated to {lang}"
+        )
+    } else {
+        "LLM cleanup is on but Ollama isn't running: dictations are pasted with built-in \
+         cleanup only"
+            .to_string()
+    };
+    let pull = llm_model.trim_end_matches(":latest");
+    let fix = if installed {
+        ollama_start_hint()
+    } else {
+        format!(
+            "{}, then: ollama pull {pull}  (or turn LLM cleanup off)",
+            install_hint("ollama")
+        )
+    };
+    Check {
+        name: "ollama".into(),
+        status: CheckStatus::Warn,
+        message,
+        fix: Some(fix),
+    }
+}
+
 /// Median speed of recent dictations. Slower than real time makes every
 /// dictation feel broken, and the cause is usually the machine's state
 /// (battery, a busy CPU) or the model size, which this names.
@@ -777,6 +808,25 @@ mod tests {
         r.latency.transcribe_ms = transcribe_ms;
         r.latency.audio_ms = audio_ms;
         r
+    }
+
+    #[test]
+    fn unreachable_ollama_warns_and_mentions_lost_translation() {
+        let c = ollama_unreachable_check("English", "llama3.2:latest", false);
+        assert_eq!(c.status, CheckStatus::Warn);
+        assert!(
+            c.message.contains("NOT translated to English"),
+            "{}",
+            c.message
+        );
+        let fix = c.fix.unwrap();
+        assert!(fix.contains("ollama pull llama3.2"), "{fix}");
+        assert!(!fix.contains(":latest"), "{fix}");
+
+        let c = ollama_unreachable_check("auto", "llama3.2", true);
+        assert_eq!(c.status, CheckStatus::Warn);
+        assert!(!c.message.contains("translated"), "{}", c.message);
+        assert_eq!(c.fix.unwrap(), ollama_start_hint());
     }
 
     #[test]

@@ -221,6 +221,7 @@ mod tests {
             injected_chars: 0,
             latency: latency(transcribe_ms, audio_ms),
             corrected_text: None,
+            stt_confidence: None,
         }
     }
 

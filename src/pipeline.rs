@@ -60,6 +60,11 @@ pub struct PreparedReport {
     pub latency: LatencyMetrics,
     /// Length of the recording, for usage stats.
     pub audio_ms: u64,
+    /// Whisper's mean token probability for the transcript, when known.
+    pub confidence: Option<f32>,
+    /// Why nothing was inserted although the user spoke, e.g. "Arabic
+    /// script" for speech Whisper decoded in a language the user doesn't use.
+    pub rejected: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +186,8 @@ impl Pipeline {
         let raw_text = transcript.text.clone();
         let audio_ms = latency.audio_ms;
 
+        let confidence = transcript.confidence;
+
         if stt::is_non_speech(&raw_text) {
             return PreparedReport {
                 app_name: ctx.app_name.clone(),
@@ -190,6 +197,8 @@ impl Pipeline {
                 processed_text: String::new(),
                 latency,
                 audio_ms,
+                confidence,
+                rejected: transcript.rejected,
             };
         }
 
@@ -208,7 +217,15 @@ impl Pipeline {
             processed_text: processed.text,
             latency,
             audio_ms,
+            confidence,
+            rejected: None,
         }
+    }
+
+    /// Whether dictations are going through the LLM right now: `None` when
+    /// LLM cleanup is off, `Some(false)` when it's on but unreachable.
+    pub fn llm_status(&self) -> Option<bool> {
+        self.processor.llm_status()
     }
 
     /// Cleans up the spoken parts of the transcript and splices in what the
@@ -225,6 +242,7 @@ impl Pipeline {
                 transcript: Transcript {
                     text: text.to_string(),
                     language: transcript.language.clone(),
+                    ..Transcript::default()
                 },
                 ctx: ctx.clone(),
                 mode,

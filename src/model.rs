@@ -17,17 +17,24 @@ impl AudioChunk {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Transcript {
     pub text: String,
     pub language: Option<String>,
+    /// Mean token probability Whisper assigned to the text (0..1), when known.
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    /// Set when Whisper's output was thrown away rather than pasted, e.g.
+    /// "Arabic script" when the user only speaks English and Hindi.
+    #[serde(default)]
+    pub rejected: Option<String>,
 }
 
 impl Transcript {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            language: None,
+            ..Self::default()
         }
     }
 }

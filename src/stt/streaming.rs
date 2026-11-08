@@ -338,9 +338,34 @@ struct Progress {
     failed: Option<VoxError>,
     audio_secs: f64,
     work: Duration,
+    /// Sum of segment confidence x segment seconds, and those seconds.
+    confidence_weighted: f64,
+    confidence_secs: f64,
+    /// Why the first discarded segment was discarded.
+    rejected: Option<String>,
 }
 
 impl Progress {
+    fn new() -> Self {
+        Self {
+            texts: Vec::new(),
+            language: None,
+            segments: 0,
+            failed: None,
+            audio_secs: 0.0,
+            work: Duration::ZERO,
+            confidence_weighted: 0.0,
+            confidence_secs: 0.0,
+            rejected: None,
+        }
+    }
+
+    /// Confidence over the whole dictation, weighted by segment length.
+    fn confidence(&self) -> Option<f32> {
+        (self.confidence_secs > 0.0)
+            .then(|| (self.confidence_weighted / self.confidence_secs) as f32)
+    }
+
     fn hint(&self) -> SegmentHint {
         SegmentHint {
             previous_text: tail_chars(&self.texts.join(" "), MAX_CONTEXT_CHARS),
@@ -378,6 +403,13 @@ impl Progress {
                 }
                 self.segments += 1;
                 self.audio_secs += chunk.duration_secs();
+                if let Some(c) = t.confidence {
+                    self.confidence_weighted += c as f64 * chunk.duration_secs();
+                    self.confidence_secs += chunk.duration_secs();
+                }
+                if self.rejected.is_none() {
+                    self.rejected = t.rejected.clone();
+                }
                 if self.language.is_none() {
                     self.language = t.language.clone();
                 }
@@ -421,14 +453,7 @@ fn worker(
     let mut segmenter = Segmenter::new(rate);
     let mut read_pos = 0usize;
     let mut fresh = Vec::new();
-    let mut progress = Progress {
-        texts: Vec::new(),
-        language: None,
-        segments: 0,
-        failed: None,
-        audio_secs: 0.0,
-        work: Duration::ZERO,
-    };
+    let mut progress = Progress::new();
 
     // While recording: transcribe each segment as soon as it's complete.
     loop {
@@ -512,7 +537,9 @@ fn finish(
     Ok(StreamOutcome {
         transcript: Transcript {
             text: progress.texts.join(" "),
+            confidence: progress.confidence(),
             language: progress.language,
+            rejected: progress.rejected,
         },
         segments: progress.segments,
         segments_while_speaking,
@@ -868,6 +895,7 @@ mod tests {
                 Ok(Transcript {
                     text,
                     language: Some("en".into()),
+                    ..Transcript::default()
                 })
             }
         }

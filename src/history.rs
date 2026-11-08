@@ -36,6 +36,10 @@ pub struct DictationRecord {
     #[serde(default)]
     pub latency: LatencyMetrics,
     pub corrected_text: Option<String>,
+    /// Whisper's mean token probability for `raw_text` (0..1); records
+    /// from before it was tracked have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt_confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
