@@ -38,6 +38,18 @@ All notable changes to Vox are listed here. The format follows
   same three sentences repeated three times plus a cut-off fourth; Vox now keeps one copy, as it
   already did for a single repeated sentence.
 
+- **Mid-dictation language switches with several languages set.** With "English, Hindi", each
+  longer piece of a streamed dictation is checked again, and Vox switches when it's clearly the
+  other language (so Indian-accented English isn't decoded as Hindi).
+- **No more silently missing sentences.** A piece discarded as the wrong script is retried with
+  the next phrase; if part is still lost, the tray says "inserted (part not caught)".
+- **Hinglish keeps Devanagari.** The wrong-script guard no longer throws away Hindi script for
+  the Hinglish setting.
+- **The window title can't be pasted as dictation.** When Whisper only repeats its prompt (window
+  title, dictionary) on a mumble or an unsure clip, nothing is inserted. Clearly saying a name
+  from the title still works.
+- **Window-title hint keeps the site name** after a page title too long to fit.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

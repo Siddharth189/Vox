@@ -536,6 +536,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     latency: latency.clone(),
                     corrected_text: None,
                     stt_confidence: report.confidence,
+                    rejected: report.rejected.clone(),
                 };
                 let slow = speed::check(&latency, &history::load_history());
                 if let Err(e) = history::append_record(record) {
@@ -575,6 +576,13 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                             slow.audio_ms
                         );
                         speed::status_text(slow, on_battery)
+                    }
+                    None if report.rejected.is_some() && status_for_strategy(&injection.strategy) == STATUS_INSERTED => {
+                        tracing::info!(
+                            "inserted, but part of the dictation was discarded ({})",
+                            report.rejected.as_deref().unwrap_or_default()
+                        );
+                        STATUS_PART_LOST.to_string()
                     }
                     None => {
                         let pasted = status_for_strategy(&injection.strategy);
@@ -867,6 +875,7 @@ const PASTE_HINT: &str = "Vox: on clipboard (Cmd+V)";
 const PASTE_HINT: &str = "Vox: on clipboard (Ctrl+V)";
 
 const STATUS_INSERTED: &str = "Vox: inserted at cursor";
+const STATUS_PART_LOST: &str = "Vox: inserted (part not caught)";
 
 /// The status after a paste when LLM cleanup is turned on but its server
 /// isn't answering, so the user knows the text skipped polishing (and

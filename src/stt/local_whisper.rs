@@ -154,6 +154,45 @@ impl LocalWhisper {
         choice
     }
 
+    /// A later segment of a dictation in several languages: `pinned`
+    /// unless this segment is long enough to tell and clearly another of
+    /// the user's languages. Short segments (the tail after the key is
+    /// released, usually) skip detection: it costs an encoder pass the
+    /// user would wait through, and can't be trusted on them anyway.
+    fn redetect(
+        &self,
+        state: &mut WhisperState,
+        samples: &[f32],
+        allowed: &[&'static str],
+        pinned: &'static str,
+    ) -> &'static str {
+        let secs = samples.len() as f32 / TARGET_RATE as f32;
+        if secs < SHORT_CLIP_SECS {
+            return pinned;
+        }
+        let threads = self.threads.max(1) as usize;
+        let probs = match state
+            .pcm_to_mel(samples, threads)
+            .and_then(|_| state.lang_detect(0, threads))
+        {
+            Ok((_, probs)) => probs,
+            Err(e) => {
+                tracing::debug!("language re-detection failed: {e}");
+                return pinned;
+            }
+        };
+        let ranked: Vec<(&'static str, f32)> = probs
+            .iter()
+            .enumerate()
+            .filter_map(|(id, p)| whisper_rs::get_lang_str(id as i32).map(|code| (code, *p)))
+            .collect();
+        let choice = keep_or_switch(&ranked, allowed, secs, pinned);
+        if choice != pinned {
+            tracing::debug!("language: switched {pinned} -> {choice} for {secs:.1}s segment");
+        }
+        choice
+    }
+
     /// Transcribes 16 kHz mono `samples`. `hint` carries the text and
     /// language of earlier segments when streaming (empty otherwise);
     /// `vocabulary` is extra spelling context, such as the window title.
@@ -199,11 +238,19 @@ impl LocalWhisper {
             .filter(|c| allowed.as_ref().is_none_or(|a| a.contains(c)));
         let language: Option<&'static str> = match &plan {
             LanguagePlan::Force(code) => Some(code),
-            // Keep the language an earlier segment settled on: re-detecting
-            // on each few-second segment can flip between related languages.
-            _ if earlier.is_some() => earlier,
-            LanguagePlan::Constrained(codes) => self.detect_language(state, samples, Some(codes)),
+            LanguagePlan::Hinglish => Some("en"),
+            // Auto: keep the language an earlier segment settled on;
+            // re-detecting among every language on a few-second segment
+            // flips between related ones.
+            LanguagePlan::Auto if earlier.is_some() => earlier,
             LanguagePlan::Auto => self.detect_language(state, samples, None),
+            // Several languages: the user may switch mid-dictation, so look
+            // again, but only leave the earlier language when this segment
+            // is clearly another (see `keep_or_switch`).
+            LanguagePlan::Constrained(codes) => match earlier {
+                Some(pinned) => Some(self.redetect(state, samples, codes, pinned)),
+                None => self.detect_language(state, samples, Some(codes)),
+            },
         };
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -283,6 +330,25 @@ impl LocalWhisper {
         let confidence = (tokens > 0).then(|| prob_sum / tokens as f32);
         let text = collapse_repeated_sentences(text.trim());
 
+        // Whisper sometimes "transcribes" its own prompt on near-silent or
+        // unclear audio. The prompt now holds the window title, so that
+        // would paste an email subject or a document name as dictation.
+        let quiet = is_quiet(&samples[..samples.len().saturating_sub(TAIL_PADDING_SAMPLES)]);
+        if is_prompt_echo(
+            &text,
+            &[self.initial_prompt.as_deref(), vocabulary],
+            confidence,
+            quiet,
+        ) {
+            tracing::warn!("discarded transcript that only repeats the prompt: {text:?}");
+            return Ok(Transcript {
+                text: String::new(),
+                language: detected,
+                confidence,
+                rejected: None,
+            });
+        }
+
         // Never paste text in a script none of the user's languages use
         // (Arabic for someone who speaks English and Hindi).
         if let Some(script) = allowed
@@ -311,6 +377,9 @@ impl LocalWhisper {
 enum LanguagePlan {
     /// Decode as this language, no detection.
     Force(&'static str),
+    /// Hinglish / code-switched Hindi-English: decode as Latin-script
+    /// English, but output in Devanagari is still the user's language.
+    Hinglish,
     /// Detect, but only among these (the languages the user speaks).
     Constrained(Vec<&'static str>),
     /// Detect among every language Whisper knows.
@@ -322,6 +391,7 @@ impl LanguagePlan {
     fn allowed(&self) -> Option<Vec<&'static str>> {
         match self {
             LanguagePlan::Force(code) => Some(vec![code]),
+            LanguagePlan::Hinglish => Some(vec!["en", "hi"]),
             LanguagePlan::Constrained(codes) => Some(codes.clone()),
             LanguagePlan::Auto => None,
         }
@@ -343,7 +413,7 @@ fn language_plan(input: Option<&str>, english_only_model: bool) -> LanguagePlan 
     // (what the cleanup prompt's few-shot examples expect); language ID
     // would flip between hi/ur/en per clip.
     if lower.contains("hinglish") || lower.contains("mixed") || lower.contains("code-switch") {
-        return LanguagePlan::Force("en");
+        return LanguagePlan::Hinglish;
     }
     let mut codes: Vec<&'static str> = Vec::new();
     for part in lower
@@ -418,6 +488,96 @@ fn pick_language(
     }
 }
 
+/// For a later segment in a multi-language dictation: the most likely of
+/// `allowed` if it differs from `pinned` and the detector is confident
+/// (same bar as the sticky fallback), else `pinned`. Indian-accented
+/// English often gets a fair "hi" score; decoding English as Hindi gives
+/// Devanagari or a translation, which is worse than missing a switch.
+fn keep_or_switch(
+    ranked: &[(&'static str, f32)],
+    allowed: &[&'static str],
+    secs: f32,
+    pinned: &'static str,
+) -> &'static str {
+    ranked
+        .iter()
+        .filter(|(c, _)| allowed.contains(c))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|(c, p)| *c != pinned && is_confident(secs, *p))
+        .map_or(pinned, |(c, _)| c)
+}
+
+/// Loudest 20 ms window below this is a mumble or room noise, not speech
+/// someone meant to dictate (quiet speech at arm's length measures >0.02).
+const QUIET_RMS: f32 = 0.02;
+/// Below this mean token probability Whisper is mostly guessing.
+const LOW_CONFIDENCE: f32 = 0.5;
+
+fn is_quiet(samples: &[f32]) -> bool {
+    audio::window_rms(samples, TARGET_RATE)
+        .into_iter()
+        .fold(0.0f32, f32::max)
+        < QUIET_RMS
+}
+
+/// True when `text` is only a copy of what Whisper was prompted with: it
+/// reproduces two or more prompt parts (dictionary entries, title parts)
+/// in a row, or exactly one part while Whisper was unsure or the audio was
+/// quiet. Saying "ICICI Lombard" clearly into the ICICI site's search box,
+/// or "Vox" with Vox in the dictionary, is still dictation.
+fn is_prompt_echo(
+    text: &str,
+    prompts: &[Option<&str>],
+    confidence: Option<f32>,
+    quiet: bool,
+) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let said = words(text);
+    if said.is_empty() {
+        return false;
+    }
+    // Every prompt word, tagged with the part it came from.
+    let mut context: Vec<(String, usize)> = Vec::new();
+    let mut parts = 0usize;
+    for prompt in prompts.iter().flatten() {
+        for part in prompt.split(", ") {
+            let w = words(part);
+            if w.is_empty() {
+                continue;
+            }
+            context.extend(w.into_iter().map(|w| (w, parts)));
+            parts += 1;
+        }
+    }
+    let unsure = confidence.is_some_and(|c| c < LOW_CONFIDENCE) || quiet;
+    (0..context.len().saturating_sub(said.len() - 1)).any(|start| {
+        let run = &context[start..start + said.len()];
+        if !run.iter().zip(&said).all(|((c, _), s)| c == s) {
+            return false;
+        }
+        let (first, last) = (run[0].1, run[run.len() - 1].1);
+        // Starts and ends on part boundaries, so it's whole parts copied.
+        let starts_part = start == 0 || context[start - 1].1 != first;
+        let ends_part =
+            start + said.len() == context.len() || context[start + said.len()].1 != last;
+        if !(starts_part && ends_part) {
+            return false;
+        }
+        // Two or more parts in a row, or one whole part on unsure audio.
+        first != last || unsure
+    })
+}
+
 fn top_languages(ranked: &[(&'static str, f32)], n: usize) -> Vec<(&'static str, f32)> {
     let mut sorted = ranked.to_vec();
     sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -482,7 +642,9 @@ pub fn title_vocabulary(title: Option<&str>, app_name: &str) -> Option<String> {
     for part in parts {
         let sep = if out.is_empty() { 0 } else { 2 };
         if out.len() + sep + part.len() > MAX_TITLE_HINT_LEN {
-            break;
+            // Skip this one, not the rest: the site's name is usually the
+            // short last part, after a long page title.
+            continue;
         }
         if sep > 0 {
             out.push_str(", ");
@@ -741,7 +903,7 @@ mod tests {
         assert_eq!(language_plan(Some("Hindi"), false), Force("hi"));
         assert_eq!(
             language_plan(Some("Hinglish / mixed Hindi-English"), false),
-            Force("en")
+            Hinglish
         );
         assert_eq!(
             language_plan(Some("English, Hindi"), false),
@@ -763,6 +925,86 @@ mod tests {
         assert_eq!(language_plan(Some("Klingon"), false), Auto);
         // An English-only model can only decode English.
         assert_eq!(language_plan(Some("English, Hindi"), true), Force("en"));
+    }
+
+    #[test]
+    fn hinglish_decodes_as_english_but_allows_devanagari() {
+        assert_eq!(LanguagePlan::Hinglish.allowed(), Some(vec!["en", "hi"]));
+        // An English-only model really is English only.
+        assert_eq!(LanguagePlan::Force("en").allowed(), Some(vec!["en"]));
+    }
+
+    #[test]
+    fn later_segments_switch_language_only_when_clearly_another() {
+        let en_hi = ["en", "hi"];
+        // Clear Hindi on a long segment: switch.
+        assert_eq!(
+            keep_or_switch(&[("en", 0.1), ("hi", 0.85)], &en_hi, 5.0, "en"),
+            "hi"
+        );
+        // Accented English scoring "hi" moderately: keep English.
+        assert_eq!(
+            keep_or_switch(&[("en", 0.35), ("hi", 0.6)], &en_hi, 5.0, "en"),
+            "en"
+        );
+        // Sure, but too short to trust: keep.
+        assert_eq!(
+            keep_or_switch(&[("en", 0.05), ("hi", 0.9)], &en_hi, 2.0, "en"),
+            "en"
+        );
+        // A language the user doesn't speak never wins.
+        assert_eq!(
+            keep_or_switch(&[("ar", 0.95), ("hi", 0.02)], &en_hi, 5.0, "en"),
+            "en"
+        );
+        // Same language: nothing to switch.
+        assert_eq!(keep_or_switch(&[("en", 0.9)], &en_hi, 5.0, "en"), "en");
+    }
+
+    #[test]
+    fn prompt_echo_is_dropped_only_when_it_is_one() {
+        let dict = Some("Vox, CI/CD");
+        let title = Some("List of Cashless Network Garages, ICICI Lombard");
+        let prompts = [dict, title];
+        // Whisper reciting the title (two parts): dropped even if confident.
+        assert!(is_prompt_echo(
+            "List of Cashless Network Garages, ICICI Lombard.",
+            &prompts,
+            Some(0.9),
+            false
+        ));
+        // Saying the site's name clearly into its search box is dictation.
+        assert!(!is_prompt_echo("ICICI Lombard", &prompts, Some(0.9), false));
+        assert!(!is_prompt_echo("Vox.", &prompts, Some(0.85), false));
+        // The same words on a mumble, or when Whisper was guessing: echo.
+        assert!(is_prompt_echo("ICICI Lombard", &prompts, Some(0.9), true));
+        assert!(is_prompt_echo("ICICI Lombard", &prompts, Some(0.3), false));
+        // Part of a part, or a sentence using the words: dictation.
+        assert!(!is_prompt_echo(
+            "Network Garages",
+            &prompts,
+            Some(0.3),
+            false
+        ));
+        assert!(!is_prompt_echo(
+            "Open the ICICI Lombard claim form",
+            &prompts,
+            Some(0.3),
+            false
+        ));
+        assert!(!is_prompt_echo("", &prompts, None, true));
+        assert!(!is_prompt_echo(
+            "ICICI Lombard",
+            &[None, None],
+            Some(0.1),
+            true
+        ));
+    }
+
+    #[test]
+    fn quiet_means_no_window_reaches_speech_level() {
+        assert!(is_quiet(&vec![0.003; 16_000]));
+        assert!(!is_quiet(&vec![0.1; 16_000]));
     }
 
     #[test]
@@ -834,6 +1076,12 @@ mod tests {
         let hint = title_vocabulary(Some(long), "Word").unwrap();
         assert!(hint.len() <= MAX_TITLE_HINT_LEN);
         assert!(hint.ends_with("on and on, Second part of it"));
+        // A part too long to fit is skipped, not the site name after it.
+        let page = "An extremely long article headline about quarterly results that exceeds eighty characters - ICICI Lombard - Google Chrome";
+        assert_eq!(
+            title_vocabulary(Some(page), "chrome"),
+            Some("ICICI Lombard".into())
+        );
     }
 
     #[test]

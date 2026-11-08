@@ -40,6 +40,10 @@ pub struct DictationRecord {
     /// from before it was tracked have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stt_confidence: Option<f32>,
+    /// Speech that was discarded rather than inserted ("Arabic script"),
+    /// for a dictation that was inserted only in part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

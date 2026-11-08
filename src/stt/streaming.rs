@@ -398,7 +398,10 @@ impl Progress {
             Ok(t) => {
                 let text = t.text.trim();
                 let speech = !super::is_non_speech(text);
-                if speech && !must_keep && !ends_sentence(text) {
+                // A segment discarded as the wrong script is retried with
+                // the next phrase too, like a fragment: more audio is what
+                // language detection needs. Only at the end is it given up.
+                if !must_keep && (t.rejected.is_some() || (speech && !ends_sentence(text))) {
                     return Verdict::Defer;
                 }
                 self.segments += 1;
@@ -410,7 +413,9 @@ impl Progress {
                 if self.rejected.is_none() {
                     self.rejected = t.rejected.clone();
                 }
-                if self.language.is_none() {
+                // The latest kept segment's language carries on: after a
+                // switch (English to Hindi) the next segment starts there.
+                if t.rejected.is_none() && t.language.is_some() {
                     self.language = t.language.clone();
                 }
                 let text = strip_echo(text, &self.texts);
@@ -986,6 +991,66 @@ mod tests {
         assert_eq!(calls[1].1, SegmentHint::default(), "nothing kept yet");
         // Speech is counted once, and the work of the dropped attempt too.
         assert!((out.audio_ms as f32 / 1000.0 - (calls[1].0 + calls[2].0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_rejected_segment_is_retried_and_reported_if_still_lost() {
+        // Segment 1 comes back as the wrong script (rejected): it's retried
+        // with the next phrase and decodes fine the second time.
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&calls);
+        let mut n = 0;
+        let f = move |chunk: &AudioChunk, hint: &SegmentHint| {
+            log.lock()
+                .unwrap()
+                .push((chunk.duration_secs() as f32, hint.clone()));
+            n += 1;
+            Ok(match n {
+                1 => Transcript {
+                    rejected: Some("Arabic script".into()),
+                    ..Transcript::default()
+                },
+                2 => Transcript::new("Both phrases, decoded the second time."),
+                _ => Transcript::new("The tail."),
+            })
+        };
+        let tap = LiveTap::new(RATE);
+        let session = StreamingSession::start(tap.clone(), f);
+        for chunk in two_sentences_and_a_tail().chunks(RATE as usize / 2) {
+            tap.push(chunk);
+        }
+        wait_for_calls(&calls, 2);
+        std::thread::sleep(POLL * 2);
+        let out = session.finish().unwrap();
+        assert_eq!(
+            out.transcript.text,
+            "Both phrases, decoded the second time. The tail."
+        );
+        assert_eq!(out.transcript.rejected, None, "nothing was lost");
+        let calls = calls.lock().unwrap();
+        assert!(calls[1].0 > calls[0].0 + 6.0, "retry covers both phrases");
+
+        // Rejected again at the end, where there's no retry: kept text plus
+        // a note that part was lost.
+        let tap = LiveTap::new(RATE);
+        let mut n = 0;
+        let f = move |_: &AudioChunk, _: &SegmentHint| {
+            n += 1;
+            Ok(if n == 1 {
+                Transcript::new("First sentence.")
+            } else {
+                Transcript {
+                    rejected: Some("Arabic script".into()),
+                    ..Transcript::default()
+                }
+            })
+        };
+        tap.push(&two_sentences_and_a_tail());
+        let session = StreamingSession::start(tap.clone(), f);
+        std::thread::sleep(POLL * 3);
+        let out = session.finish().unwrap();
+        assert_eq!(out.transcript.text, "First sentence.");
+        assert_eq!(out.transcript.rejected.as_deref(), Some("Arabic script"));
     }
 
     #[test]

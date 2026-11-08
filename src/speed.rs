@@ -222,6 +222,7 @@ mod tests {
             latency: latency(transcribe_ms, audio_ms),
             corrected_text: None,
             stt_confidence: None,
+            rejected: None,
         }
     }
 
