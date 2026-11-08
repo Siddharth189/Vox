@@ -36,12 +36,16 @@ use crate::model::{AudioChunk, Transcript};
 /// Don't cut before this much audio: shorter segments lose context, make
 /// Whisper guess at casing and punctuation, and are more often fragments.
 pub const MIN_SEGMENT_SECS: f32 = 6.0;
-/// Quiet stretch that counts as a pause between phrases. Within a sentence,
-/// gaps between words run ~50-250 ms; between phrases, 300 ms and up.
-pub const PAUSE_MS: u32 = 400;
-/// Past this, take any shorter pause, and keep the segment even if it
-/// doesn't end a sentence: a long, unbroken segment costs more at the end
-/// than a slightly early cut costs in accuracy.
+/// Quiet stretch that counts as the end of a sentence. Gaps between words
+/// run ~50-250 ms and comma pauses ~250-650 ms (measured: 460-560 ms in
+/// read speech, 660 ms in JFK's inaugural); sentence ends run 800 ms and up.
+/// Cutting at a comma pause makes Whisper end the piece with a full stop
+/// ("signed. So people..."), so only longer pauses qualify.
+pub const PAUSE_MS: u32 = 700;
+/// Past this, take the longest pause there is (down to [`SHORT_PAUSE_MS`]),
+/// and keep the segment even if it doesn't end a sentence: a long,
+/// unbroken segment costs more at the end than an early cut costs in
+/// accuracy.
 pub const SOFT_MAX_SECS: f32 = 12.0;
 pub const SHORT_PAUSE_MS: u32 = 200;
 /// Never let a segment grow past this (Whisper's window is 30 s). Cut at the
@@ -168,9 +172,12 @@ impl Segmenter {
         let pause = self.windows_for_ms(PAUSE_MS);
         let short_pause = self.windows_for_ms(SHORT_PAUSE_MS);
 
-        // Earliest pause whose middle falls past the minimum length. Runs
-        // are scanned in order; a run still going at the end of the buffer
-        // counts once it's long enough (the speaker has paused already).
+        // Earliest sentence-length pause whose middle falls past the
+        // minimum length. Runs are scanned in order; a run still going at
+        // the end of the buffer counts once it's long enough (the speaker
+        // has paused already). Past the soft max, the longest shorter
+        // pause is the fallback.
+        let mut longest: Option<(usize, usize)> = None; // (len, mid)
         let mut i = 0;
         while i < n {
             if self.rms[i] >= threshold {
@@ -186,8 +193,18 @@ impl Segmenter {
             }
             let len = i - start;
             let mid = start + len / 2;
-            let needed = if mid >= soft_max { short_pause } else { pause };
-            if len >= needed && mid >= min {
+            if mid < min {
+                continue;
+            }
+            if len >= pause {
+                return Some(mid.min(hard_max));
+            }
+            if len >= short_pause && longest.is_none_or(|(l, _)| len > l) {
+                longest = Some((len, mid));
+            }
+        }
+        if n >= soft_max {
+            if let Some((_, mid)) = longest {
                 return Some(mid.min(hard_max));
             }
         }
@@ -364,7 +381,8 @@ impl Progress {
                 if self.language.is_none() {
                     self.language = t.language.clone();
                 }
-                if speech && !repeats_previous(text, &self.texts) {
+                let text = strip_echo(text, &self.texts);
+                if speech && !text.is_empty() {
                     self.texts.push(text.to_string());
                 }
                 Verdict::Keep
@@ -526,25 +544,46 @@ fn tail_chars(text: &str, max: usize) -> String {
     }
 }
 
-/// Prompting with prior text has one known failure mode: on a quiet or
-/// unclear segment Whisper sometimes just echoes the end of its prompt.
-/// Drop a segment whose text is nothing but a repeat of what came before.
-fn repeats_previous(text: &str, previous: &[String]) -> bool {
-    let norm = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
+/// Prompting with prior text has one known failure mode: Whisper repeats
+/// the end of its prompt before carrying on (measured on a 40 s paragraph:
+/// "...into the background. Second, we move the speech model download into
+/// the background. With progress..."). Drops a start of `text` that is the
+/// same 3+ words the previous text ended with; "" if that's all it was.
+/// Fewer than 3 words is left alone: "Yes. Yes." is plausible dictation.
+fn strip_echo<'a>(text: &'a str, previous: &[String]) -> &'a str {
+    const MIN_ECHO_WORDS: usize = 3;
+    let norm = |w: &str| -> String {
+        w.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
     };
-    let new = norm(text);
-    if new.split(' ').count() < 3 {
-        return false; // "Yes. Yes." is plausible dictation
+    let before = previous.join(" ");
+    let prev: Vec<String> = before
+        .split_whitespace()
+        .map(norm)
+        .filter(|w| !w.is_empty())
+        .collect();
+    // (byte offset, normalized word) for each word of `text`.
+    let words: Vec<(usize, String)> = text
+        .split_whitespace()
+        .map(|w| (w.as_ptr() as usize - text.as_ptr() as usize, norm(w)))
+        .filter(|(_, w)| !w.is_empty())
+        .collect();
+    let longest = prev.len().min(words.len());
+    for k in (MIN_ECHO_WORDS..=longest).rev() {
+        let echoed = prev[prev.len() - k..]
+            .iter()
+            .zip(&words[..k])
+            .all(|(a, (_, b))| a == b);
+        if echoed {
+            return match words.get(k) {
+                Some((offset, _)) => &text[*offset..],
+                None => "",
+            };
+        }
     }
-    let before = norm(&previous.join(" "));
-    before.ends_with(&new)
+    text
 }
 
 #[cfg(test)]
@@ -587,14 +626,30 @@ mod tests {
     fn cuts_in_the_middle_of_the_first_pause_past_the_minimum() {
         let mut s = Segmenter::new(RATE);
         s.push(&tone(3.0));
-        s.push(&quiet(0.6)); // too early: ends before 6 s
-        s.push(&tone(3.0)); // 6.6 s
-        s.push(&quiet(0.6)); // pause centered at 6.9 s
+        s.push(&quiet(0.8)); // too early: ends before 6 s
+        s.push(&tone(3.0)); // 6.8 s
+        s.push(&quiet(0.8)); // pause centered at 7.2 s
         s.push(&tone(1.0));
         let seg = s.take_segment().expect("should cut at the second pause");
-        assert!((secs(&seg) - 6.9).abs() < 0.03, "cut at {}", secs(&seg));
+        assert!((secs(&seg) - 7.2).abs() < 0.03, "cut at {}", secs(&seg));
         assert!(s.take_segment().is_none());
-        assert!((secs(&s.take_rest()) - 1.3).abs() < 0.03);
+        assert!((secs(&s.take_rest()) - 1.4).abs() < 0.03);
+    }
+
+    #[test]
+    fn comma_length_pauses_are_not_cut_at() {
+        let mut s = Segmenter::new(RATE);
+        s.push(&concat(&[
+            tone(6.5),
+            quiet(0.5),
+            tone(3.0),
+            quiet(0.55),
+            tone(1.0),
+        ]));
+        assert!(
+            s.take_segment().is_none(),
+            "500 ms is a comma, not a full stop"
+        );
     }
 
     #[test]
@@ -611,11 +666,28 @@ mod tests {
     fn a_pause_still_in_progress_counts() {
         let mut s = Segmenter::new(RATE);
         s.push(&tone(7.0));
+        s.push(&quiet(0.5));
+        assert!(s.take_segment().is_none(), "500 ms isn't a pause yet");
         s.push(&quiet(0.3));
-        assert!(s.take_segment().is_none(), "300 ms isn't a pause yet");
-        s.push(&quiet(0.2));
-        let seg = s.take_segment().expect("500 ms of quiet is");
+        let seg = s.take_segment().expect("800 ms of quiet is");
         assert!(secs(&seg) > 7.0 && secs(&seg) < 7.5);
+    }
+
+    #[test]
+    fn past_the_soft_max_the_longest_short_pause_wins() {
+        let mut s = Segmenter::new(RATE);
+        // 250 ms at 7 s, 450 ms at 10 s, 250 ms at 12.5 s; none sentence-length.
+        s.push(&concat(&[
+            tone(7.0),
+            quiet(0.25),
+            tone(2.75),
+            quiet(0.45),
+            tone(2.3),
+            quiet(0.25),
+            tone(1.0),
+        ]));
+        let seg = s.take_segment().expect("past 12 s something must give");
+        assert!((secs(&seg) - 10.22).abs() < 0.05, "cut at {}", secs(&seg));
     }
 
     #[test]
@@ -646,31 +718,31 @@ mod tests {
     #[test]
     fn deferred_cut_moves_on_to_the_next_pause() {
         let mut s = Segmenter::new(RATE);
-        s.push(&concat(&[tone(6.5), quiet(0.5)]));
+        s.push(&concat(&[tone(6.5), quiet(0.8)]));
         let first = s.next_cut().expect("pause after 6.5 s");
         s.defer(first);
         // The same pause, still going, is not offered again...
         s.push(&quiet(1.0));
         assert_eq!(s.next_cut(), None);
         // ...but the next one is, and the segment spans both.
-        s.push(&concat(&[tone(2.0), quiet(0.5)]));
+        s.push(&concat(&[tone(2.0), quiet(0.8)]));
         let second = s.next_cut().expect("next pause");
         assert!(second > first);
         assert!(
-            (s.secs_at(second) - 10.25).abs() < 0.05,
+            (s.secs_at(second) - 10.7).abs() < 0.05,
             "{}",
             s.secs_at(second)
         );
         let seg = s.commit(second);
-        assert!((secs(&seg) - 10.25).abs() < 0.05);
+        assert!((secs(&seg) - 10.7).abs() < 0.05);
         // Committing clears the deferral for what follows.
-        s.push(&concat(&[tone(6.5), quiet(0.5)]));
+        s.push(&concat(&[tone(6.5), quiet(0.8)]));
         assert!(s.next_cut().is_some());
     }
 
     #[test]
     fn push_in_odd_sized_chunks_matches_one_push() {
-        let audio = concat(&[tone(3.0), quiet(0.2), tone(3.5), quiet(0.7), tone(1.0)]);
+        let audio = concat(&[tone(3.0), quiet(0.2), tone(3.5), quiet(0.9), tone(1.0)]);
         let mut whole = Segmenter::new(RATE);
         whole.push(&audio);
         let mut pieces = Segmenter::new(RATE);
@@ -689,10 +761,10 @@ mod tests {
         let mut s = Segmenter::new(rate);
         let n = |secs: f32| (rate as f32 * secs) as usize;
         s.push(&vec![0.2; n(7.0)]);
-        s.push(&vec![0.0; n(0.6)]);
+        s.push(&vec![0.0; n(0.8)]);
         s.push(&vec![0.2; n(1.0)]);
         let seg = s.take_segment().expect("cut");
-        assert!((seg.len() as f32 / rate as f32 - 7.3).abs() < 0.03);
+        assert!((seg.len() as f32 / rate as f32 - 7.4).abs() < 0.03);
     }
 
     #[test]
@@ -717,12 +789,38 @@ mod tests {
     #[test]
     fn echo_of_previous_text_is_dropped() {
         let prev = vec!["We should ship it on Friday after the review.".to_string()];
-        assert!(repeats_previous(
-            "ship it on Friday after the review",
-            &prev
-        ));
-        assert!(!repeats_previous("Then we celebrate.", &prev));
-        assert!(!repeats_previous("the review", &prev), "too short to judge");
+        assert_eq!(strip_echo("ship it on Friday after the review", &prev), "");
+        assert_eq!(
+            strip_echo("Then we celebrate.", &prev),
+            "Then we celebrate."
+        );
+        assert_eq!(
+            strip_echo("the review", &prev),
+            "the review",
+            "too short to judge"
+        );
+    }
+
+    #[test]
+    fn echoed_start_is_trimmed_and_the_rest_kept() {
+        // Measured with real Whisper on a 40 s paragraph.
+        let prev = vec![
+            "So people stop seeing the smart screen warning.".to_string(),
+            "Second, we move the speech model download into the background.".to_string(),
+        ];
+        assert_eq!(
+            strip_echo(
+                "Second, we move the speech model download into the background. \
+                 With progress shown in the tray menu.",
+                &prev
+            ),
+            "With progress shown in the tray menu."
+        );
+        // Shared words that aren't at the very end of the previous text stay.
+        assert_eq!(
+            strip_echo("The smart screen warning is gone now.", &prev),
+            "The smart screen warning is gone now."
+        );
     }
 
     type Calls = Arc<Mutex<Vec<(f32, SegmentHint)>>>;
@@ -776,7 +874,7 @@ mod tests {
     }
 
     fn two_sentences_and_a_tail() -> Vec<f32> {
-        concat(&[tone(6.5), quiet(0.6), tone(6.5), quiet(0.6), tone(1.0)])
+        concat(&[tone(6.5), quiet(0.8), tone(6.5), quiet(0.8), tone(1.0)])
     }
 
     fn wait_for_calls(calls: &Calls, n: usize) {
@@ -870,16 +968,16 @@ mod tests {
         let tap = LiveTap::new(RATE);
         tap.push(&concat(&[
             tone(6.5),
-            quiet(0.6),
+            quiet(0.8),
             tone(6.5),
-            quiet(0.6),
+            quiet(0.8),
             tone(3.0),
         ]));
         let session = StreamingSession::start(tap.clone(), fake.func());
         wait_for_calls(&fake.calls, 2);
         std::thread::sleep(POLL * 2);
         let out = session.finish().unwrap();
-        assert_eq!(out.segments_while_speaking, 1, "kept at the 13.9 s pause");
+        assert_eq!(out.segments_while_speaking, 1, "kept at the 14.2 s pause");
         assert_eq!(out.segments, 2);
     }
 

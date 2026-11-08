@@ -30,8 +30,9 @@ paste at the cursor.
    growing capture buffer; `Recorder::start` allocates a fresh one per
    dictation, so a draining worker never sees the next dictation's audio). A
    worker thread polls it every 150 ms, and a pure `Segmenter` cuts it in the
-   middle of the first pause (400 ms below 10% of the segment's 95th-percentile
-   level) at least 6 s in, takes 200 ms pauses after 12 s, and cuts at the
+   middle of the first sentence-length pause (700 ms below 10% of the
+   segment's 95th-percentile level; comma pauses measure 460-660 ms) at least
+   6 s in, takes the longest pause of 200 ms or more after 12 s, and cuts at the
    quietest window by 20 s regardless. Each segment goes through the usual
    trim/resample/silence gate and is transcribed with a `SegmentHint`: the last
    200 characters so far as Whisper's prompt (after the dictionary), and the
@@ -45,7 +46,10 @@ paste at the cursor.
    wait time. At stop, the tail is decoded in one piece.
    On stop, `Pipeline::prepare_streamed` re-checks privacy, then finishes the
    session: only the tail since the last pause is left (about 2 s of speech on
-   real recordings). A segment that is only an echo of the prompt is dropped.
+   real recordings). Whisper sometimes starts a segment by repeating the end of its prompt;
+   those leading words (3 or more, matching the previous text's end) are
+   dropped. `scripts/bench-stream.ps1` (Windows CI) checks a synthesized 40 s
+   paragraph streamed against one pass for repeats, split sentences and drift.
    If any segment fails, the whole recording is transcribed in one pass, the
    same as without streaming. Cancel (Esc) drops the session. History records
    `streamed_segments`, and `transcribe_ms` is then only the wait after stop;
