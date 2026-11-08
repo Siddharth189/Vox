@@ -6,8 +6,18 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-08
+
 ### Added
 
+- **Bilingual accuracy.** Set the input language to the languages you speak ("English, Hindi",
+  "en+hi") and Vox detects only among those, so a short accented clip no longer comes out as
+  Arabic or Indonesian. Short, unsure clips fall back to the language you were last speaking
+  clearly. Text in a script none of your languages use is never pasted ("didn't catch that - try
+  a full sentence"). Names from the focused window's title help Whisper spell them right.
+- **Tells you when the LLM isn't running.** With LLM cleanup on but no server answering, the tray
+  and `vox doctor` say so, including when that means dictations aren't being translated.
+  Whisper's confidence is saved with each dictation in history.
 - **Built-in cleanup tidies spoken repeats.** Without an LLM, "so so what I was thinking",
   "I, I think" and "we need to, we need to ship" now come out as one copy. Repeats that are
   usually meant stay ("very very good", "no no", "I know that that works", phone numbers).
@@ -84,5 +94,6 @@ All notable changes to Vox are listed here. The format follows
 - First release: macOS tray dictation with local Whisper, Ollama cleanup, per-app profiles,
   custom dictionary, and the local settings page.
 
-[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Siddharth189/Vox/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Siddharth189/Vox/releases/tag/v0.3.0
