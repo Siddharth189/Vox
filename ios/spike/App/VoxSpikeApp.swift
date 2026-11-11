@@ -13,6 +13,7 @@ final class VoxEngine: ObservableObject {
     @Published private(set) var mic = "Off"
     @Published private(set) var link = "Not started"
     @Published private(set) var last = "Nothing yet"
+    @Published private(set) var heard = "Nothing yet"
     @Published private(set) var hasKey = KeyStore.load() != nil
 
     private let recorder = Recorder()
@@ -64,21 +65,54 @@ final class VoxEngine: ObservableObject {
         case SpikeLink.cancel:
             recorder.cancelCapture()
             reply("ok")
-        case SpikeLink.stop:
-            guard let key = KeyStore.load() else {
-                recorder.cancelCapture()
-                reply("err:Add your Groq key in the app")
+        default:
+            guard let mode = SpikeLink.stopMode(in: command) else {
+                reply("err:Unknown command")
                 return
             }
-            recorder.endCapture { [weak self] wav in
+            stop(mode, reply: reply)
+        }
+    }
+
+    private func stop(_ mode: SpikeLink.Mode, reply: @escaping (String) -> Void) {
+        guard let key = KeyStore.load() else {
+            recorder.cancelCapture()
+            reply("err:Add your Groq key in the app")
+            return
+        }
+        recorder.endCapture { [weak self] wav in
+            switch mode {
+            case .english:
                 Transcriber.translate(wav: wav, apiKey: key) { result in
                     DispatchQueue.main.async {
+                        self?.heard = "(English mode translates directly)"
                         self?.finish(result, reply: reply)
                     }
                 }
+            case .hinglish:
+                Transcriber.transcribeMixed(wav: wav, apiKey: key) { result in
+                    guard case .success(let raw) = result, !raw.isEmpty else {
+                        DispatchQueue.main.async {
+                            self?.heard = "Nothing"
+                            self?.finish(result, reply: reply)
+                        }
+                        return
+                    }
+                    Hinglish.rewrite(raw, apiKey: key) { rewritten in
+                        DispatchQueue.main.async {
+                            self?.heard = raw
+                            switch rewritten {
+                            case .success:
+                                self?.finish(rewritten, reply: reply)
+                            case .failure(let error):
+                                // Type what Whisper heard rather than lose the dictation.
+                                self?.finish(.success(raw), reply: reply)
+                                self?.last = "Rewrite failed, typed what was heard. \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                }
             }
-        default:
-            reply("err:Unknown command")
         }
     }
 
@@ -120,6 +154,12 @@ struct ContentView: View {
             .font(.footnote.monospaced())
             Section("Last dictation") {
                 Text(engine.last)
+                    .textSelection(.enabled)
+            }
+            Section("Whisper heard") {
+                Text(engine.heard)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
         }

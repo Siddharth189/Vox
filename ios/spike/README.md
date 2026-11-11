@@ -3,7 +3,7 @@
 Hold-to-talk dictation on iPhone, built without a Mac or a paid developer
 account. A free Apple ID through Sideloadly grants no App Group, so the keyboard
 talks to its app over a loopback connection. A microphone session keeps the app
-alive in the background. Speech goes to Groq, which returns English text.
+alive in the background. Speech goes to Groq, which returns English or Roman-script Hinglish.
 
 ## Install
 
@@ -18,3 +18,12 @@ alive in the background. Speech goes to Groq, which returns English text.
 3. Go to any app, switch to the Vox Spike keyboard, hold **Hold to talk**, speak, and release.
 
 A session ends after 5 idle minutes. Open the app again to start a new one.
+
+## Modes
+
+The switch on the keyboard picks how speech is written. It remembers the last choice.
+
+- **English** sends speech to Whisper's translation endpoint and types English.
+- **Hinglish** keeps the words as spoken. Whisper transcribes with `language=hi` and a mixed-script hint, then `openai/gpt-oss-120b` (falling back to `openai/gpt-oss-20b`) rewrites the result in Roman script. It never translates, fixes only clear English grammar mistakes, keeps Hindi as spoken, and drops fillers and restarts. If the rewrite fails, the raw transcript is typed instead.
+
+The app shows what Whisper heard under **Whisper heard**, which is the first thing to check when a Hinglish result looks wrong. The rules and examples live in `App/Hinglish.swift`.

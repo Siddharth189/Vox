@@ -1,29 +1,55 @@
 import Foundation
 import Security
 
-/// Sends speech to Groq, whose translation mode returns English text for
-/// Hindi, English, or mixed speech.
+/// Sends speech to Groq's Whisper.
 enum Transcriber {
-    private static let endpoint = URL(string: "https://api.groq.com/openai/v1/audio/translations")!
+    private static let base = "https://api.groq.com/openai/v1/audio/"
+
+    /// Biases Whisper toward writing Hindi and English the way they were spoken,
+    /// each in its own script, instead of translating either one.
+    private static let hinglishHint =
+        "आज मैं office जाऊँगा, meeting है, and then I will call you. Please वो file भेज देना।"
 
     private struct Success: Decodable {
         let text: String
     }
 
-    private struct Failure: Decodable {
-        struct Detail: Decodable {
-            let message: String
-        }
-        let error: Detail
-    }
-
+    /// English text for Hindi, English, or mixed speech.
     static func translate(
         wav: Data,
         apiKey: String,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
+        upload(wav: wav, path: "translations", fields: [], apiKey: apiKey, completion: completion)
+    }
+
+    /// The words as spoken, without translation. Hindi mostly comes back in
+    /// Devanagari and English in Latin letters, so it still needs a rewrite.
+    static func transcribeMixed(
+        wav: Data,
+        apiKey: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let fields = [("language", "hi"), ("prompt", hinglishHint)]
+        upload(wav: wav, path: "transcriptions", fields: fields, apiKey: apiKey) { result in
+            // On silence Whisper can echo its hint back. That means nothing was said.
+            if case .success(let text) = result, !text.isEmpty, hinglishHint.contains(text) {
+                completion(.success(""))
+            } else {
+                completion(result)
+            }
+        }
+    }
+
+    private static func upload(
+        wav: Data,
+        path: String,
+        fields: [(String, String)],
+        apiKey: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
         let boundary = "vox-\(UUID().uuidString)"
-        var request = URLRequest(url: endpoint, timeoutInterval: 30)
+        var request = URLRequest(url: URL(string: base + path)!, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(
@@ -32,7 +58,8 @@ enum Transcriber {
         )
 
         var body = Data()
-        for (name, value) in [("model", "whisper-large-v3"), ("response_format", "json")] {
+        let all = [("model", "whisper-large-v3"), ("response_format", "json")] + fields
+        for (name, value) in all {
             body += Data("--\(boundary)\r\n".utf8)
             body += Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8)
         }
@@ -53,14 +80,27 @@ enum Transcriber {
                 completion(.success(success.text.trimmingCharacters(in: .whitespacesAndNewlines)))
                 return
             }
-            let detail = (try? JSONDecoder().decode(Failure.self, from: payload))?.error.message
-            let message = "Groq error \(status): \(detail ?? "unexpected reply")"
-            completion(.failure(NSError(
-                domain: "Vox",
-                code: status,
-                userInfo: [NSLocalizedDescriptionKey: message]
-            )))
+            completion(.failure(GroqError.make(status: status, payload: payload)))
         }.resume()
+    }
+}
+
+/// Turns a Groq error reply into a readable error.
+enum GroqError {
+    private struct Failure: Decodable {
+        struct Detail: Decodable {
+            let message: String
+        }
+        let error: Detail
+    }
+
+    static func make(status: Int, payload: Data) -> NSError {
+        let detail = (try? JSONDecoder().decode(Failure.self, from: payload))?.error.message
+        return NSError(
+            domain: "Vox",
+            code: status,
+            userInfo: [NSLocalizedDescriptionKey: "Groq error \(status): \(detail ?? "unexpected reply")"]
+        )
     }
 }
 
