@@ -6,6 +6,14 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A whole sentence no longer comes out as one word or a number.** On audio Whisper found hard,
+  it sometimes pasted something from its prompt instead: "1.146.0" from a "Release Notes:
+  1.146.0" tab title, or "English", for 7-12 s of speech. When the output is far too short for
+  the speech, Vox now decodes again without the prompt and keeps the fuller result. The
+  window-title hint also leaves out version numbers, counters and editor page labels.
+
 ## [0.4.0] - 2026-11-08
 
 ### Added
