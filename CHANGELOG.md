@@ -6,6 +6,16 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Language settings you can actually use.** "Languages you speak" is a set of tap-to-select
+  chips plus "I mix Hindi and English in the same sentence", and "Write it as" offers As I said
+  it, English, Hindi, Hinglish in Latin letters, or another language. Each choice says whether it
+  works right now. If translating needs the local AI and it isn't running, the page says so
+  before you dictate, instead of Vox quietly inserting untranslated text. Replaces two free-text
+  boxes whose dropdown only ever showed the value already typed. Existing settings carry over
+  unchanged.
+
 ### Fixed
 
 - **A whole sentence no longer comes out as one word or a number.** On audio Whisper found hard,

@@ -28,6 +28,7 @@ const PORT: u16 = 8722;
 const INDEX_HTML: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const DICTIONARY_JS: &str = include_str!("dictionary.js");
+const LANGUAGES_JS: &str = include_str!("languages.js");
 const PROFILES_JS: &str = include_str!("profiles.js");
 const SNIPPETS_JS: &str = include_str!("snippets.js");
 const HISTORY_JS: &str = include_str!("history.js");
@@ -58,6 +59,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/", get(index))
         .route("/app.js", get(|| async { js(APP_JS) }))
         .route("/dictionary.js", get(|| async { js(DICTIONARY_JS) }))
+        .route("/languages.js", get(|| async { js(LANGUAGES_JS) }))
         .route("/profiles.js", get(|| async { js(PROFILES_JS) }))
         .route("/snippets.js", get(|| async { js(SNIPPETS_JS) }))
         .route("/history.js", get(|| async { js(HISTORY_JS) }))
@@ -250,18 +252,31 @@ async fn post_settings(payload: Result<Json<SettingsPatch>, JsonRejection>) -> R
 struct ModelsResponse {
     whisper: Vec<String>,
     ollama: Vec<String>,
+    /// LLM cleanup is on and its server answers with the configured model:
+    /// translation will actually happen. The same check dictation uses.
+    llm_ready: bool,
 }
 
 async fn get_models() -> Json<ModelsResponse> {
     // Blocking HTTP/fs on a dedicated pool - settings server uses a current_thread runtime.
-    let result = tokio::task::spawn_blocking(|| ModelsResponse {
-        whisper: list_whisper_models(),
-        ollama: list_ollama_models(),
+    let result = tokio::task::spawn_blocking(|| {
+        let settings = Settings::load();
+        ModelsResponse {
+            whisper: list_whisper_models(),
+            ollama: list_ollama_models(),
+            llm_ready: settings.llm_cleanup
+                && crate::process::probe_llm(
+                    settings.llm_provider,
+                    &settings.llm_base_url(),
+                    &settings.llm_model,
+                ),
+        }
     })
     .await;
     Json(result.unwrap_or(ModelsResponse {
         whisper: Vec::new(),
         ollama: Vec::new(),
+        llm_ready: false,
     }))
 }
 
