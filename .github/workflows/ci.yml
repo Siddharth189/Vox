@@ -57,8 +57,12 @@ jobs:
         run: cargo test --all-features
 
   linux:
-    name: build, test (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: build, test (ubuntu-24.04)
+    # Pinned like the release build (release.yml). ubuntu-latest moved to
+    # Ubuntu 26 in November 2026 and the native dev headers below stopped
+    # installing there (apt-get exit 100 before any Vox code built). Move
+    # both workflows to the next LTS together, deliberately.
+    runs-on: ubuntu-24.04
     env:
       # Use whisper-rs-sys's pre-generated bindings: bindgen with the
       # libclang on newer distros (Ubuntu 26) emits a broken _IO_FILE that
