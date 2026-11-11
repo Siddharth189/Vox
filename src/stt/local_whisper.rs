@@ -193,6 +193,76 @@ impl LocalWhisper {
         choice
     }
 
+    /// One Whisper pass over `samples` in `language` (None: let whisper.cpp
+    /// detect), with `prompt` as the preceding text. Returns the text and
+    /// the mean probability of its word tokens.
+    fn decode(
+        &self,
+        state: &mut WhisperState,
+        samples: &[f32],
+        language: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<(String, Option<f32>)> {
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(self.threads);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        // Dictation never needs timestamps, and skipping their tokens makes
+        // decoding measurably faster.
+        params.set_no_timestamps(true);
+        // Each dictation is independent; don't condition on the previous one.
+        params.set_no_context(true);
+        params.set_suppress_blank(true);
+        params.set_language(Some(language.unwrap_or("auto")));
+        if let Some(ctx) = audio_ctx_for(samples.len()) {
+            params.set_audio_ctx(ctx);
+        }
+        // Fast speech is ~5 tokens/s; anything far beyond that is the
+        // decoder looping, so bound it instead of letting it run to 224.
+        let secs = samples.len() as f32 / TARGET_RATE as f32;
+        params.set_max_tokens((secs * 10.0).ceil() as i32 + 16);
+        if let Some(prompt) = prompt {
+            params.set_initial_prompt(prompt);
+        }
+
+        let diagnostics = std::env::var_os("VOX_WHISPER_TIMINGS").is_some();
+        if diagnostics {
+            self.ctx.reset_timings();
+        }
+        let result = state.full(params, samples);
+        if diagnostics {
+            eprintln!("whisper system info: {}", whisper_rs::print_system_info());
+            self.ctx.print_timings();
+        }
+        result.map_err(|e| VoxError::Transcription(e.to_string()))?;
+
+        let n = state
+            .full_n_segments()
+            .map_err(|e| VoxError::Transcription(e.to_string()))?;
+        let mut text = String::new();
+        let eot = self.ctx.token_eot();
+        let (mut prob_sum, mut tokens) = (0.0f32, 0u32);
+        for i in 0..n {
+            let seg = state
+                .full_get_segment_text(i)
+                .map_err(|e| VoxError::Transcription(e.to_string()))?;
+            text.push_str(&seg);
+            for j in 0..state.full_n_tokens(i).unwrap_or(0) {
+                // Special tokens (timestamps, language, end of text) sit at
+                // and above end-of-text; only the words count.
+                let is_text = state.full_get_token_id(i, j).is_ok_and(|id| id < eot);
+                if let (true, Ok(p)) = (is_text, state.full_get_token_prob(i, j)) {
+                    prob_sum += p;
+                    tokens += 1;
+                }
+            }
+        }
+        let confidence = (tokens > 0).then(|| prob_sum / tokens as f32);
+        Ok((text, confidence))
+    }
+
     /// Transcribes 16 kHz mono `samples`. `hint` carries the text and
     /// language of earlier segments when streaming (empty otherwise);
     /// `vocabulary` is extra spelling context, such as the window title.
@@ -253,72 +323,47 @@ impl LocalWhisper {
             },
         };
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(self.threads);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        // Dictation never needs timestamps, and skipping their tokens makes
-        // decoding measurably faster.
-        params.set_no_timestamps(true);
-        // Each dictation is independent; don't condition on the previous one.
-        params.set_no_context(true);
-        params.set_suppress_blank(true);
-        params.set_language(Some(language.unwrap_or("auto")));
-        if let Some(ctx) = audio_ctx_for(samples.len()) {
-            params.set_audio_ctx(ctx);
-        }
-        // Fast speech is ~5 tokens/s; anything far beyond that is the
-        // decoder looping, so bound it instead of letting it run to 224.
-        let secs = samples.len() as f32 / TARGET_RATE as f32;
-        params.set_max_tokens((secs * 10.0).ceil() as i32 + 16);
-
         let prompt = initial_prompt(
             self.initial_prompt.as_deref(),
             vocabulary,
             &hint.previous_text,
         );
-        if let Some(ref prompt) = prompt {
-            params.set_initial_prompt(prompt);
-        }
+        let (mut text, mut confidence) =
+            match self.decode(state, samples, language, prompt.as_deref()) {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    // A failed run can leave the state inconsistent; rebuild next time.
+                    *guard = None;
+                    return Err(e);
+                }
+            };
 
-        let diagnostics = std::env::var_os("VOX_WHISPER_TIMINGS").is_some();
-        if diagnostics {
-            self.ctx.reset_timings();
-        }
-        let result = state.full(params, samples);
-        if diagnostics {
-            eprintln!("whisper system info: {}", whisper_rs::print_system_info());
-            self.ctx.print_timings();
-        }
-        if let Err(e) = result {
-            // A failed run can leave the state inconsistent; rebuild next time.
-            *guard = None;
-            return Err(VoxError::Transcription(e.to_string()));
-        }
-
-        let n = state
-            .full_n_segments()
-            .map_err(|e| VoxError::Transcription(e.to_string()))?;
-        let mut text = String::new();
-        let eot = self.ctx.token_eot();
-        let (mut prob_sum, mut tokens) = (0.0f32, 0u32);
-        for i in 0..n {
-            let seg = state
-                .full_get_segment_text(i)
-                .map_err(|e| VoxError::Transcription(e.to_string()))?;
-            text.push_str(&seg);
-            for j in 0..state.full_n_tokens(i).unwrap_or(0) {
-                // Special tokens (timestamps, language, end of text) sit at
-                // and above end-of-text; only the words count.
-                let is_text = state.full_get_token_id(i, j).is_ok_and(|id| id < eot);
-                if let (true, Ok(p)) = (is_text, state.full_get_token_prob(i, j)) {
-                    prob_sum += p;
-                    tokens += 1;
+        // Whisper sometimes gives up on audio it finds hard (Hindi decoded as
+        // English, say) and copies something from its prompt instead:
+        // measured, 7-12 s of speech came back as "1.", "1.146.0" (from a
+        // "Release Notes: 1.146.0" tab title) and "English". Output that
+        // short can't be what was said, so decode once more with no prompt
+        // and keep whichever says more. Only failures pay for the extra pass.
+        let speech = &samples[..samples.len().saturating_sub(TAIL_PADDING_SAMPLES)];
+        let speech_secs = speech.len() as f32 / TARGET_RATE as f32;
+        let quiet = is_quiet(speech);
+        if prompt.is_some() && !quiet && too_short_for(&text, speech_secs) {
+            match self.decode(state, samples, language, None) {
+                Ok((retry, retry_confidence)) if content_len(&retry) > content_len(&text) => {
+                    tracing::warn!(
+                        "{speech_secs:.1}s of speech decoded as {text:?}; without the prompt: {retry:?}"
+                    );
+                    text = retry;
+                    confidence = retry_confidence;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    *guard = None;
+                    return Err(e);
                 }
             }
         }
+
         let detected = match language {
             Some(code) => Some(code.to_string()),
             None => state
@@ -327,13 +372,11 @@ impl LocalWhisper {
                 .and_then(whisper_rs::get_lang_str)
                 .map(str::to_string),
         };
-        let confidence = (tokens > 0).then(|| prob_sum / tokens as f32);
         let text = collapse_repeated_sentences(text.trim());
 
         // Whisper sometimes "transcribes" its own prompt on near-silent or
         // unclear audio. The prompt now holds the window title, so that
         // would paste an email subject or a document name as dictation.
-        let quiet = is_quiet(&samples[..samples.len().saturating_sub(TAIL_PADDING_SAMPLES)]);
         if is_prompt_echo(
             &text,
             &[self.initial_prompt.as_deref(), vocabulary],
@@ -513,6 +556,23 @@ const QUIET_RMS: f32 = 0.02;
 /// Below this mean token probability Whisper is mostly guessing.
 const LOW_CONFIDENCE: f32 = 0.5;
 
+/// Speech at least this long is worth a second pass when it decodes to
+/// next to nothing.
+const RETRY_MIN_SECS: f32 = 4.0;
+/// Fewer letters and digits per second of speech than this is not a
+/// transcript. Real speech runs ~10-15 in English or Hindi, ~4 in Chinese.
+const MIN_CHARS_PER_SEC: f32 = 2.0;
+
+/// Letters and digits in `text`: how much it says, in any script.
+fn content_len(text: &str) -> usize {
+    text.chars().filter(|c| c.is_alphanumeric()).count()
+}
+
+/// True when `text` is far too short to be `secs` of speech ("1." for 7 s).
+fn too_short_for(text: &str, secs: f32) -> bool {
+    secs >= RETRY_MIN_SECS && (content_len(text) as f32) < secs * MIN_CHARS_PER_SEC
+}
+
 fn is_quiet(samples: &[f32]) -> bool {
     audio::window_rms(samples, TARGET_RATE)
         .into_iter()
@@ -609,6 +669,27 @@ pub fn title_vocabulary(title: Option<&str>, app_name: &str) -> Option<String> {
         "windsurf",
     ];
     const PLACEHOLDERS: &[&str] = &["new tab", "welcome", "untitled", "start page", "home"];
+    // Editor and browser page labels: not names anyone needs spelled.
+    const UI_LABELS: &[&str] = &[
+        "release notes",
+        "settings",
+        "extension",
+        "extensions",
+        "keyboard shortcuts",
+        "problems",
+        "output",
+        "terminal",
+        "search",
+        "source control",
+        "explorer",
+        "preview",
+        "get started",
+        "walkthrough",
+        "inbox",
+        "notifications",
+        "downloads",
+        "history",
+    ];
     let app = app_name.trim().to_ascii_lowercase();
     let normalized = title?.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut parts: Vec<String> = Vec::new();
@@ -626,16 +707,36 @@ pub fn title_vocabulary(title: Option<&str>, app_name: &str) -> Option<String> {
                 }
             }
         }
+        // "Release Notes: 1.146.0", "Extension: Rust Analyzer": an editor's
+        // own page label in front of the actual subject.
+        if let Some((label, rest)) = part.split_once(':') {
+            if UI_LABELS.contains(&label.trim().to_ascii_lowercase().as_str()) {
+                part = rest.trim();
+            }
+        }
+        // Only words need spelling help. Version numbers, dates and counts
+        // ("1.146.0", "v2.3", "#684") don't, and Whisper has pasted
+        // "1.146.0" from the title instead of the user's sentence.
+        let words: Vec<&str> = part
+            .split_whitespace()
+            .filter(|w| {
+                let letters = w.chars().filter(|c| c.is_alphabetic()).count();
+                let digits = w.chars().filter(|c| c.is_ascii_digit()).count();
+                letters > 0 && letters > digits
+            })
+            .collect();
+        let part = words.join(" ");
         let lower = part.to_ascii_lowercase();
         if part.is_empty()
             || lower == app
             || APP_SUFFIXES.contains(&lower.as_str())
             || PLACEHOLDERS.contains(&lower.as_str())
+            || UI_LABELS.contains(&lower.as_str())
         {
             continue;
         }
-        if !parts.iter().any(|p| p.eq_ignore_ascii_case(part)) {
-            parts.push(part.to_string());
+        if !parts.iter().any(|p| p.eq_ignore_ascii_case(&part)) {
+            parts.push(part);
         }
     }
     let mut out = String::new();
@@ -1043,6 +1144,66 @@ mod tests {
         assert!(is_confident(4.0, 0.8));
         assert!(!is_confident(2.0, 0.95));
         assert!(!is_confident(10.0, 0.5));
+    }
+
+    #[test]
+    fn title_hint_drops_version_numbers_and_page_labels() {
+        // The title that made Whisper paste "1.146.0" for a whole sentence.
+        assert_eq!(
+            title_vocabulary(
+                Some("Release Notes: 1.146.0 - vox - Visual Studio Code"),
+                "Code"
+            ),
+            Some("vox".into())
+        );
+        assert_eq!(
+            title_vocabulary(
+                Some("Extension: Rust Analyzer - Visual Studio Code"),
+                "Code"
+            ),
+            Some("Rust Analyzer".into())
+        );
+        assert_eq!(
+            title_vocabulary(Some("Settings - Visual Studio Code"), "Code"),
+            None
+        );
+        assert_eq!(
+            title_vocabulary(
+                Some("Release v2.3.1 · Siddharth189/Vox - Google Chrome"),
+                "chrome"
+            ),
+            Some("Release Siddharth189/Vox".into())
+        );
+        // Counts and issue numbers go; the words around them stay.
+        assert_eq!(
+            title_vocabulary(Some("PR #684 review - GitHub - Google Chrome"), "chrome"),
+            Some("PR review, GitHub".into())
+        );
+    }
+
+    #[test]
+    fn far_too_short_output_is_retried() {
+        // Measured: 7.3 s, 9.5 s and 12.3 s of speech.
+        assert!(too_short_for("1.", 7.3));
+        assert!(too_short_for("1.146.0", 9.5));
+        assert!(too_short_for("English", 12.3));
+        // Real transcripts of the same lengths are nowhere near the bar.
+        assert!(!too_short_for("Hello, my check-up is done.", 4.2));
+        assert!(!too_short_for(
+            "Check the transcript for some history of the last few days.",
+            10.7
+        ));
+        assert!(
+            !too_short_for("सांसों की माला", 3.5),
+            "short clips aren't checked"
+        );
+        assert!(
+            !too_short_for("今天我们发布新版本", 4.0),
+            "Chinese is dense"
+        );
+        // A short answer to a short clip is fine.
+        assert!(!too_short_for("Yes.", 2.0));
+        assert_eq!(content_len("1.146.0"), 5);
     }
 
     #[test]
