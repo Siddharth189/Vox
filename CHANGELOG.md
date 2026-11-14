@@ -6,6 +6,8 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-14
+
 ### Added
 
 - **Edit by voice.** Select text anywhere, press `Ctrl+Shift+.`, and say how to change it: "make
@@ -138,6 +140,7 @@ All notable changes to Vox are listed here. The format follows
 - First release: macOS tray dictation with local Whisper, Ollama cleanup, per-app profiles,
   custom dictionary, and the local settings page.
 
-[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Siddharth189/Vox/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Siddharth189/Vox/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Siddharth189/Vox/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Siddharth189/Vox/releases/tag/v0.3.0
