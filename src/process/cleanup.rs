@@ -7,8 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{LlmProvider, Settings};
-use crate::error::Result;
-use crate::model::{EnrichedRequest, ProcessedText};
+use crate::error::{Result, VoxError};
+use crate::model::{AppContext, EnrichedRequest, ProcessedText};
 use crate::process::local::LocalCleanup;
 use crate::process::ollama::{probe, OllamaProcessor};
 use crate::process::TextProcessor;
@@ -132,6 +132,31 @@ impl TextProcessor for CleanupProcessor {
             }
         }
         self.local.process(req)
+    }
+
+    /// Tried even while the cached probe says the server is down or hasn't
+    /// answered yet: unlike cleanup there's no fallback, so a fresh attempt
+    /// (refused in milliseconds when nothing listens) is the better bet.
+    fn edit(&self, instruction: &str, selection: &str, _ctx: &AppContext) -> Result<String> {
+        let Some((llm, availability)) = &self.llm else {
+            return Err(VoxError::Processing(
+                "edit by voice needs LLM cleanup turned on in settings".into(),
+            ));
+        };
+        match llm.edit(instruction, selection) {
+            Ok(text) => {
+                availability.set(true);
+                Ok(text)
+            }
+            Err(e) => {
+                availability.refresh();
+                Err(VoxError::Processing(format!(
+                    "{} ({}) didn't answer: {e}",
+                    llm.provider().label(),
+                    llm.model()
+                )))
+            }
+        }
     }
 
     fn name(&self) -> &'static str {

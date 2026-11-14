@@ -131,7 +131,7 @@ window.VoxHistory = {
           const preview = (r.final_text || r.raw_text || "").slice(0, 60);
           const active = r.id === selectedId ? " active" : "";
           return `<div class="history-item${active}" data-id="${escapeHtml(r.id)}">
-            <div class="history-item-meta">${escapeHtml(r.app_name || "")} &middot; ${fmtDate(r.created_at_ms)}</div>
+            <div class="history-item-meta">${r.edit ? "Edit &middot; " : ""}${escapeHtml(r.app_name || "")} &middot; ${fmtDate(r.created_at_ms)}</div>
             <div class="history-item-preview">${escapeHtml(preview)}${(r.final_text || "").length > 60 ? "…" : ""}</div>
           </div>`;
         })
@@ -144,6 +144,51 @@ window.VoxHistory = {
           renderDetail();
         });
       });
+    }
+
+    function dictationStages(record) {
+      return `
+        <div class="stage-row">
+          <div class="stage-card">
+            <div class="field-title" style="font-size:0.85rem">01 &middot; Raw Whisper</div>
+            <div class="mono stage-text">${escapeHtml(record.raw_text || "")}</div>
+          </div>
+          <div class="stage-card">
+            <div class="field-title" style="font-size:0.85rem">02 &middot; LLM cleanup</div>
+            <div class="mono stage-text">${escapeHtml(record.model_text || "")}</div>
+          </div>
+          <div class="stage-card">
+            <div class="field-title" style="font-size:0.85rem">03 &middot; Dictionary final</div>
+            <div class="mono stage-text">${escapeHtml(record.final_text || "")}</div>
+          </div>
+        </div>
+
+        <div class="field-title" style="margin-top:1rem">Teach Vox</div>
+        <div class="field-desc" style="margin-bottom:0.5rem">Fix what Vox got wrong, then click Learn. It remembers what it misheard, and suggests new words for your dictionary so Whisper expects them next time.</div>
+        <textarea id="history_correct">${escapeHtml(record.corrected_text || record.final_text || "")}</textarea>
+        <div class="actions">
+          <button class="primary" id="history_learn">Learn correction</button>
+          <span class="status" id="history_learn_status"></span>
+        </div>
+        <div class="actions" id="history_suggestions" hidden></div>
+      `;
+    }
+
+    // Edit by voice: what was said, and what replaced the selection. No
+    // "Teach Vox": the result is the LLM's rewrite, not a transcription.
+    function editStages(record) {
+      return `
+        <div class="stage-row">
+          <div class="stage-card">
+            <div class="field-title" style="font-size:0.85rem">Instruction</div>
+            <div class="mono stage-text">${escapeHtml(record.raw_text || "")}</div>
+          </div>
+          <div class="stage-card">
+            <div class="field-title" style="font-size:0.85rem">Replaced the selection with</div>
+            <div class="mono stage-text">${escapeHtml(record.final_text || "")}</div>
+          </div>
+        </div>
+      `;
     }
 
     function renderDetail() {
@@ -169,29 +214,7 @@ window.VoxHistory = {
           <div class="stat" title="${lat.audio_ms ? `Whisper took ${fmtSeconds(lat.stt_work_ms || lat.transcribe_ms || 0)} for ${fmtSeconds(lat.audio_ms)} of speech` : "Not measured for this dictation"}"><div class="stat-label">Speed</div><div class="stat-value">${fmtSpeed(speedFactor(lat))}</div></div>
         </div>
 
-        <div class="stage-row">
-          <div class="stage-card">
-            <div class="field-title" style="font-size:0.85rem">01 &middot; Raw Whisper</div>
-            <div class="mono stage-text">${escapeHtml(record.raw_text || "")}</div>
-          </div>
-          <div class="stage-card">
-            <div class="field-title" style="font-size:0.85rem">02 &middot; LLM cleanup</div>
-            <div class="mono stage-text">${escapeHtml(record.model_text || "")}</div>
-          </div>
-          <div class="stage-card">
-            <div class="field-title" style="font-size:0.85rem">03 &middot; Dictionary final</div>
-            <div class="mono stage-text">${escapeHtml(record.final_text || "")}</div>
-          </div>
-        </div>
-
-        <div class="field-title" style="margin-top:1rem">Teach Vox</div>
-        <div class="field-desc" style="margin-bottom:0.5rem">Fix what Vox got wrong, then click Learn. It remembers what it misheard, and suggests new words for your dictionary so Whisper expects them next time.</div>
-        <textarea id="history_correct">${escapeHtml(record.corrected_text || record.final_text || "")}</textarea>
-        <div class="actions">
-          <button class="primary" id="history_learn">Learn correction</button>
-          <span class="status" id="history_learn_status"></span>
-        </div>
-        <div class="actions" id="history_suggestions" hidden></div>
+        ${record.edit ? editStages(record) : dictationStages(record)}
       `;
 
       const st = detailEl.querySelector("#history_learn_status");
@@ -237,7 +260,8 @@ window.VoxHistory = {
         }
       }
 
-      detailEl.querySelector("#history_learn").addEventListener("click", () => learn([]));
+      // Edits have no "Teach Vox" section.
+      detailEl.querySelector("#history_learn")?.addEventListener("click", () => learn([]));
     }
 
     function applyFilter() {

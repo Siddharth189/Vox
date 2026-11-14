@@ -19,12 +19,15 @@ use crate::config::{self, HotkeyConfig, Settings};
 use crate::error::{Result, VoxError};
 use crate::history::{self, DictationRecord};
 use crate::hotkey::{self as hk, PttAction, PushToTalk};
-use crate::model::{elapsed_ms, AppContext, AudioChunk, InjectionResult, Mode, Privacy};
+use crate::model::{
+    elapsed_ms, AppContext, Format, InjectionResult, LatencyMetrics, Mode, Privacy,
+};
+use crate::overlay::Overlay;
 use crate::permissions;
-use crate::pipeline::{build_live_pipeline, Pipeline, PreparedReport};
+use crate::pipeline::{build_live_pipeline, EditReport, Pipeline, PreparedReport, Speech};
 use crate::speed;
 use crate::stats;
-use crate::stt::StreamingSession;
+use crate::stt::{Live, LiveText, StreamingSession};
 
 enum UserEvent {
     Hotkey(GlobalHotKeyEvent),
@@ -35,6 +38,10 @@ enum UserEvent {
         injection: InjectionResult,
         inject_ms: u64,
     },
+    /// An edit by voice finished (pasted) or failed.
+    EditDone(std::result::Result<EditReport, String>),
+    /// The words so far of recording number `.0`, while it's in progress.
+    Live(u64, LiveText),
     /// A pipeline finished building (first run, or after a settings change).
     PipelineReady(std::result::Result<Arc<Pipeline>, String>),
     DownloadProgress(u8),
@@ -49,8 +56,18 @@ enum Look {
     Processing,
 }
 
+/// What a recording is for: which hotkey started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Dictation: the words are typed at the cursor.
+    Dictate,
+    /// Edit by voice: the words are an instruction for the selection.
+    Edit,
+}
+
 /// True when any setting that affects the dictation pipeline changed (not
-/// the hotkey, its mode, or sound cues, which apply without a rebuild).
+/// the hotkeys, their modes, sound cues, or live text, which apply without
+/// a rebuild).
 fn pipeline_settings_changed(old: &Settings, new: &Settings) -> bool {
     old.auto_paste != new.auto_paste
         || old.output_language != new.output_language
@@ -120,6 +137,191 @@ fn init_logging() {
     }
 }
 
+/// What the user sees: the tray icon and its status line, and the live
+/// text window (or, where there's none, the tray's title).
+struct Ui {
+    tray: TrayIcon,
+    icons: TrayIcons,
+    status_item: MenuItem,
+    status: String,
+    overlay: Option<Overlay>,
+    /// Off in settings: the overlay stays hidden.
+    live_text: bool,
+    /// The recording whose live text is on screen. Updates from any other
+    /// (a finished one whose last preview was still in flight) are ignored.
+    live_session: Option<u64>,
+}
+
+impl Ui {
+    fn set_status(&mut self, text: impl Into<String>) {
+        self.status = text.into();
+        set_status(&self.tray, &self.status_item, &self.status);
+    }
+
+    /// Shows the current status again (it may have been overwritten).
+    fn show_status(&self) {
+        set_status(&self.tray, &self.status_item, &self.status);
+    }
+
+    fn set_look(&self, look: Look) {
+        set_look(&self.tray, &self.icons, look);
+    }
+
+    /// A recording started.
+    fn listen(&mut self, session: u64, kind: Kind, hotkey: &HotkeyConfig, tap: &Recorder) {
+        self.live_session = Some(session);
+        let title = match kind {
+            Kind::Dictate => format!(
+                "Listening · {} to finish, Esc to cancel",
+                hk::display_label(hotkey)
+            ),
+            Kind::Edit => "Edit · say how to change the selection".to_string(),
+        };
+        if self.live_text {
+            if let Some(overlay) = self.overlay.as_mut() {
+                overlay.listen(&title, kind == Kind::Edit, Some(tap.tap()));
+            }
+        }
+    }
+
+    fn live(&mut self, session: u64, text: &LiveText) {
+        if self.live_session != Some(session) || !self.live_text {
+            return;
+        }
+        match self.overlay.as_mut() {
+            Some(overlay) => overlay.set_text(text),
+            // macOS menu bar / Linux indicator label: the last few words.
+            None => {
+                let full = text.full();
+                let tail: String = {
+                    let chars: Vec<char> = full.chars().collect();
+                    let start = chars.len().saturating_sub(TITLE_CHARS);
+                    chars[start..].iter().collect()
+                };
+                let shown = if tail.len() < full.len() {
+                    format!("…{}", tail.trim_start())
+                } else {
+                    tail
+                };
+                self.tray.set_title(Some(shown));
+            }
+        }
+    }
+
+    /// Recording stopped; the text is on its way.
+    fn working(&mut self, kind: Kind) {
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.working(match kind {
+                Kind::Dictate => "Writing…",
+                Kind::Edit => "Editing…",
+            });
+        }
+    }
+
+    /// Done: nothing more to show.
+    fn done(&mut self) {
+        self.live_session = None;
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.hide();
+        }
+        self.tray.set_title(None::<&str>);
+    }
+
+    /// Done, with something the user should notice.
+    fn flash(&mut self, message: &str) {
+        self.live_session = None;
+        self.tray.set_title(None::<&str>);
+        match self.overlay.as_mut() {
+            Some(overlay) if self.live_text => overlay.flash(message),
+            Some(overlay) => overlay.hide(),
+            None => {}
+        }
+    }
+}
+
+/// How many characters of live text fit in a menu bar title.
+const TITLE_CHARS: usize = 40;
+
+/// The global hotkeys: dictation, edit by voice, and Esc (registered only
+/// while recording).
+struct Hotkeys {
+    manager: GlobalHotKeyManager,
+    dictate: Option<HotKey>,
+    edit: Option<HotKey>,
+    cancel: HotKey,
+    cancel_registered: bool,
+}
+
+impl Hotkeys {
+    fn kind_of(&self, id: u32) -> Option<Kind> {
+        if self.dictate.is_some_and(|k| k.id() == id) {
+            Some(Kind::Dictate)
+        } else if self.edit.is_some_and(|k| k.id() == id) {
+            Some(Kind::Edit)
+        } else {
+            None
+        }
+    }
+
+    fn register_cancel(&mut self) {
+        if !self.cancel_registered {
+            self.cancel_registered = self.manager.register(self.cancel).is_ok();
+        }
+    }
+
+    fn unregister_cancel(&mut self) {
+        if self.cancel_registered {
+            let _ = self.manager.unregister(self.cancel);
+            self.cancel_registered = false;
+        }
+    }
+
+    /// Re-registers one of the hotkeys after a settings change, keeping the
+    /// old binding if the new one is taken. Returns the error to show.
+    fn rebind(&mut self, kind: Kind, old: &HotkeyConfig, new: &HotkeyConfig) -> Option<String> {
+        let slot = match kind {
+            Kind::Dictate => &mut self.dictate,
+            Kind::Edit => &mut self.edit,
+        };
+        if let Some(previous) = slot.take() {
+            let _ = self.manager.unregister(previous);
+        }
+        if !new.enabled {
+            return None;
+        }
+        match register_hotkey(&self.manager, new) {
+            Ok(k) => {
+                *slot = Some(k);
+                None
+            }
+            Err(e) => {
+                tracing::warn!("hotkey re-register failed: {e}");
+                // best-effort restore of the previous binding
+                if old.enabled {
+                    if let Ok(k) = register_hotkey(&self.manager, old) {
+                        *slot = Some(k);
+                    }
+                }
+                Some(e.to_string())
+            }
+        }
+    }
+}
+
+/// The recording in progress, if any.
+struct Recording {
+    recorder: Recorder,
+    /// Transcription of the recording in progress, when streaming is on.
+    /// Dropping it cancels it.
+    stream: Option<StreamingSession>,
+    /// Which hotkey started the recording in progress.
+    kind: Option<Kind>,
+    /// Number of the latest recording, for matching its live text.
+    session: u64,
+    /// Dictations and edits recorded and still being processed.
+    processing: usize,
+}
+
 pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     // Without this, failures inside global-hotkey's own worker thread (X11
     // connection, XKB extension setup, XGrabKey) are completely silent -
@@ -131,12 +333,16 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     crate::settings_web::start_background();
 
     let mut settings = Settings::load();
-    let mut recorder = Recorder::new()?;
-    recorder.set_device(settings.input_device.clone());
-    // Transcription of the dictation in progress, when streaming is on.
-    // Dropping it cancels it.
-    let mut stream: Option<StreamingSession> = None;
+    let mut rec = Recording {
+        recorder: Recorder::new()?,
+        stream: None,
+        kind: None,
+        session: 0,
+        processing: 0,
+    };
+    rec.recorder.set_device(settings.input_device.clone());
     let mut ptt = PushToTalk::new(settings.hotkey.mode);
+    let mut edit_ptt = PushToTalk::new(settings.edit_hotkey.mode);
 
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -181,26 +387,44 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
         });
     }
 
-    let hotkey_manager =
-        GlobalHotKeyManager::new().map_err(|e| VoxError::Other(format!("hotkey manager: {e}")))?;
-    let mut current_hotkey: Option<HotKey> = None;
+    let mut keys = Hotkeys {
+        manager: GlobalHotKeyManager::new()
+            .map_err(|e| VoxError::Other(format!("hotkey manager: {e}")))?,
+        dictate: None,
+        edit: None,
+        cancel: HotKey::new(None, Code::Escape),
+        cancel_registered: false,
+    };
     let mut hotkey_error: Option<String> = None;
     if settings.hotkey.enabled {
-        match register_hotkey(&hotkey_manager, &settings.hotkey) {
-            Ok(k) => current_hotkey = Some(k),
+        match register_hotkey(&keys.manager, &settings.hotkey) {
+            Ok(k) => keys.dictate = Some(k),
             Err(e) => {
                 tracing::error!("failed to register hotkey: {e}");
                 hotkey_error = Some(e.to_string());
             }
         }
     }
-    let cancel_hotkey = HotKey::new(None, Code::Escape);
-    let mut cancel_registered = false;
+    let mut edit_hotkey_error: Option<String> = None;
+    if settings.edit_hotkey.enabled {
+        match register_hotkey(&keys.manager, &settings.edit_hotkey) {
+            Ok(k) => keys.edit = Some(k),
+            Err(e) => {
+                tracing::warn!("failed to register the edit-by-voice hotkey: {e}");
+                edit_hotkey_error = Some(e.to_string());
+            }
+        }
+    }
 
     let menu = Menu::new();
     let status_item = MenuItem::new("Vox: starting...", false, None);
     let hotkey_hint = MenuItem::new(
         hotkey_hint_text(&settings.hotkey, hotkey_error.as_deref()),
+        false,
+        None,
+    );
+    let edit_hint = MenuItem::new(
+        edit_hint_text(&settings.edit_hotkey, edit_hotkey_error.as_deref()),
         false,
         None,
     );
@@ -216,6 +440,7 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
     let menu_err = |e: tray_icon::menu::Error| VoxError::Other(e.to_string());
     menu.append(&status_item).map_err(menu_err)?;
     menu.append(&hotkey_hint).map_err(menu_err)?;
+    menu.append(&edit_hint).map_err(menu_err)?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(menu_err)?;
     menu.append(&settings_item).map_err(menu_err)?;
@@ -268,18 +493,27 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
 
     let mut last_polled_mtime: Option<SystemTime> =
         config::settings_mtime(&config::settings_path());
-    let mut processing = 0usize;
-    let mut status = if downloading {
-        "Vox: downloading speech model...".to_string()
-    } else {
-        "Vox: loading speech model...".to_string()
+    let mut ui = Ui {
+        tray,
+        icons,
+        status_item,
+        status: String::new(),
+        overlay: Overlay::new(),
+        live_text: settings.live_text,
+        live_session: None,
     };
-    set_status(&tray, &status_item, &status);
+    ui.set_status(if downloading {
+        "Vox: downloading speech model..."
+    } else {
+        "Vox: loading speech model..."
+    });
 
     tracing::info!(
-        "tray started; hotkey {} registered = {}",
+        "tray started; hotkey {} registered = {}; edit hotkey {} registered = {}",
         hk::display_label(&settings.hotkey),
-        current_hotkey.is_some()
+        keys.dictate.is_some(),
+        hk::display_label(&settings.edit_hotkey),
+        keys.edit.is_some()
     );
 
     event_loop.run(move |event, _, control_flow| {
@@ -302,27 +536,56 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
 
         match user {
             UserEvent::Tick => {
-                periodic(
-                    &mut last_polled_mtime,
-                    &mut settings,
-                    &mut pipeline_settings,
-                    &mut ptt,
-                    &hotkey_manager,
-                    &mut current_hotkey,
-                    &hotkey_hint,
-                    &proxy,
-                    &model_path,
-                    &mut recorder,
-                    &mut stream,
-                    &mut cancel_registered,
-                    &cancel_hotkey,
-                    &tray,
-                    &icons,
-                    &status_item,
-                    &mut status,
-                    &mut processing,
-                    &pipeline,
-                );
+                // Safety net for a lost key-up: never record past the cap.
+                if rec
+                    .recorder
+                    .elapsed()
+                    .is_some_and(|e| e >= MAX_RECORDING)
+                {
+                    tracing::warn!(
+                        "recording hit the {}s cap; finishing",
+                        MAX_RECORDING.as_secs()
+                    );
+                    ptt.reset();
+                    edit_ptt.reset();
+                    finish_recording(&mut rec, &pipeline, &proxy, &settings, &mut keys, &mut ui);
+                }
+                if let Some(new_settings) = poll_settings(&mut last_polled_mtime) {
+                    if new_settings.hotkey != settings.hotkey {
+                        let error =
+                            keys.rebind(Kind::Dictate, &settings.hotkey, &new_settings.hotkey);
+                        hotkey_hint
+                            .set_text(hotkey_hint_text(&new_settings.hotkey, error.as_deref()));
+                        ptt.set_mode(new_settings.hotkey.mode);
+                    }
+                    if new_settings.edit_hotkey != settings.edit_hotkey {
+                        let error = keys.rebind(
+                            Kind::Edit,
+                            &settings.edit_hotkey,
+                            &new_settings.edit_hotkey,
+                        );
+                        edit_hint.set_text(edit_hint_text(
+                            &new_settings.edit_hotkey,
+                            error.as_deref(),
+                        ));
+                        edit_ptt.set_mode(new_settings.edit_hotkey.mode);
+                    }
+                    if pipeline_settings_changed(&pipeline_settings, &new_settings) {
+                        let model = model_path(&new_settings);
+                        if model.exists() {
+                            spawn_pipeline_build(&proxy, new_settings.clone(), model);
+                        } else {
+                            tracing::warn!(
+                                "whisper model {} not found; keeping the current one",
+                                model.display()
+                            );
+                        }
+                        pipeline_settings = new_settings.clone();
+                    }
+                    rec.recorder.set_device(new_settings.input_device.clone());
+                    ui.live_text = new_settings.live_text;
+                    settings = new_settings;
+                }
             }
 
             UserEvent::Menu(MenuEvent { id }) => {
@@ -343,126 +606,69 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     permissions::request_accessibility_trust();
                     permissions::open_accessibility_settings();
                 } else if id == quit_id {
-                    if recorder.is_recording() {
-                        recorder.cancel();
+                    if rec.recorder.is_recording() {
+                        rec.recorder.cancel();
                     }
-                    stream = None;
+                    rec.stream = None;
                     *control_flow = ControlFlow::Exit;
                 }
             }
 
             UserEvent::Hotkey(event) => {
-                let is_cancel = event.id == cancel_hotkey.id();
-                if is_cancel {
-                    if event.state == HotKeyState::Pressed && recorder.is_recording() {
-                        recorder.cancel();
-                        stream = None;
+                if event.id == keys.cancel.id() {
+                    if event.state == HotKeyState::Pressed && rec.recorder.is_recording() {
+                        rec.recorder.cancel();
+                        rec.stream = None;
+                        rec.kind = None;
                         ptt.reset();
-                        unregister_cancel(&hotkey_manager, &cancel_hotkey, &mut cancel_registered);
+                        edit_ptt.reset();
+                        keys.unregister_cancel();
                         if settings.sound_cues {
                             cue::play(Cue::Cancel);
                         }
-                        status = "Vox: cancelled".into();
-                        set_look(&tray, &icons, look_for(false, processing));
-                        set_status(&tray, &status_item, &status);
+                        ui.set_status("Vox: cancelled");
+                        ui.done();
+                        ui.set_look(look_for(false, rec.processing));
                     }
                     return;
                 }
-                let Some(ref registered) = current_hotkey else {
+                let Some(kind) = keys.kind_of(event.id) else {
                     return;
                 };
-                if event.id != registered.id() {
+                // While one hotkey's recording runs, the other does nothing.
+                if rec.kind.is_some_and(|k| k != kind) {
                     return;
                 }
+                let machine = match kind {
+                    Kind::Dictate => &mut ptt,
+                    Kind::Edit => &mut edit_ptt,
+                };
                 let now = Instant::now();
                 let action = match event.state {
-                    HotKeyState::Pressed => ptt.on_press(now),
-                    HotKeyState::Released => ptt.on_release(now),
+                    HotKeyState::Pressed => machine.on_press(now),
+                    HotKeyState::Released => machine.on_release(now),
                 };
                 match action {
                     PttAction::None => {}
                     PttAction::Start => {
-                        let Some(ref p) = pipeline else {
-                            ptt.reset();
-                            if settings.sound_cues {
-                                cue::play(Cue::Cancel);
-                            }
-                            // keep the download/loading status visible
-                            set_status(&tray, &status_item, &status);
-                            return;
-                        };
-                        // Check the privacy switch *before* opening the mic,
-                        // not after recording someone's password.
-                        let start_ctx = p.detector.current().ok();
-                        if let Some(ref ctx) = start_ctx {
-                            if ctx.profile.privacy == Privacy::Disabled {
-                                ptt.reset();
-                                if settings.sound_cues {
-                                    cue::play(Cue::Cancel);
-                                }
-                                status = format!("Vox: off in {}", ctx.app_name);
-                                set_status(&tray, &status_item, &status);
-                                return;
-                            }
-                        }
-                        match recorder.start() {
-                            Ok(()) => {
-                                if settings.sound_cues {
-                                    cue::play(Cue::Start);
-                                }
-                                stream = settings.streaming_transcription.then(|| {
-                                    start_stream(
-                                        p,
-                                        &recorder,
-                                        start_ctx.unwrap_or_else(AppContext::unknown),
-                                    )
-                                });
-                                register_cancel(
-                                    &hotkey_manager,
-                                    &cancel_hotkey,
-                                    &mut cancel_registered,
-                                );
-                                set_look(&tray, &icons, Look::Recording);
-                                status = format!(
-                                    "Vox: listening... ({} to finish, Esc to cancel)",
-                                    hk::display_label(&settings.hotkey)
-                                );
-                                set_status(&tray, &status_item, &status);
-                            }
-                            Err(e) => {
-                                ptt.reset();
-                                tracing::error!("recorder start failed: {e}");
-                                if settings.sound_cues {
-                                    cue::play(Cue::Cancel);
-                                }
-                                status = format!("Vox: {e}");
-                                set_status(&tray, &status_item, &status);
-                            }
+                        let started = start_recording(
+                            kind, &mut rec, &pipeline, &proxy, &settings, &mut keys, &mut ui,
+                        );
+                        if !started {
+                            machine.reset();
                         }
                     }
                     PttAction::Stop => {
-                        finish_recording(
-                            &mut recorder,
-                            &mut stream,
-                            &pipeline,
-                            &proxy,
-                            &settings,
-                            &hotkey_manager,
-                            &cancel_hotkey,
-                            &mut cancel_registered,
-                            &tray,
-                            &icons,
-                            &status_item,
-                            &mut status,
-                            &mut processing,
-                        );
+                        finish_recording(&mut rec, &pipeline, &proxy, &settings, &mut keys, &mut ui);
                     }
                 }
             }
 
+            UserEvent::Live(session, text) => ui.live(session, &text),
+
             UserEvent::Done(Ok(report)) => {
                 if report.processed_text.is_empty() {
-                    processing = processing.saturating_sub(1);
+                    rec.processing = rec.processing.saturating_sub(1);
                     tracing::info!(
                         "nothing to insert (raw={:?}); silence or non-speech",
                         report.raw_text
@@ -470,15 +676,18 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     if settings.sound_cues {
                         cue::play(Cue::Cancel);
                     }
-                    status = match report.rejected {
+                    let message = match report.rejected {
                         Some(ref why) => {
                             tracing::info!("discarded dictation ({why})");
-                            "Vox: didn't catch that - try a full sentence".into()
+                            "didn't catch that - try a full sentence"
                         }
-                        None => "Vox: didn't catch that".into(),
+                        None => "didn't catch that",
                     };
-                    set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
-                    set_status(&tray, &status_item, &status);
+                    ui.set_status(format!("Vox: {message}"));
+                    if rec.kind.is_none() {
+                        ui.flash(&capitalize(message));
+                    }
+                    ui.set_look(look_for(rec.recorder.is_recording(), rec.processing));
                 } else if let Some(ref p) = pipeline {
                     let p = Arc::clone(p);
                     let proxy = proxy.clone();
@@ -501,15 +710,19 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
             }
 
             UserEvent::Done(Err(e)) => {
-                processing = processing.saturating_sub(1);
+                rec.processing = rec.processing.saturating_sub(1);
                 tracing::warn!("dictation failed: {e}");
-                status = if e.contains("privacy blocked") {
-                    "Vox: off in this app".into()
+                let message = if e.contains("privacy blocked") {
+                    ui.set_status("Vox: off in this app");
+                    "Vox is off in this app"
                 } else {
-                    format!("Vox: failed ({e})")
+                    ui.set_status(format!("Vox: failed ({e})"));
+                    "Dictation failed - see the tray menu"
                 };
-                set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
-                set_status(&tray, &status_item, &status);
+                if rec.kind.is_none() {
+                    ui.flash(message);
+                }
+                ui.set_look(look_for(rec.recorder.is_recording(), rec.processing));
             }
 
             UserEvent::Injected {
@@ -517,7 +730,10 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                 injection,
                 inject_ms,
             } => {
-                processing = processing.saturating_sub(1);
+                rec.processing = rec.processing.saturating_sub(1);
+                if rec.kind.is_none() {
+                    ui.done();
+                }
                 let latency = report.latency.clone().with_injection(inject_ms);
                 let record = DictationRecord {
                     id: history::new_record_id(history::now_ms()),
@@ -537,14 +753,9 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     corrected_text: None,
                     stt_confidence: report.confidence,
                     rejected: report.rejected.clone(),
+                    edit: false,
                 };
-                let slow = speed::check(&latency, &history::load_history());
-                if let Err(e) = history::append_record(record) {
-                    tracing::warn!("history append failed: {e}");
-                }
-                if let Err(e) = stats::record_dictation(&report.processed_text, report.audio_ms) {
-                    tracing::warn!("stats update failed: {e}");
-                }
+                let slow = save_record(record, &latency, &report.processed_text, report.audio_ms);
 
                 let llm = pipeline.as_ref().and_then(|p| p.llm_status());
                 tracing::info!(
@@ -566,17 +777,8 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                     }
                 );
 
-                status = match slow {
-                    Some(ref slow) => {
-                        let on_battery = speed::on_battery();
-                        tracing::warn!(
-                            "slow transcription: {} ({}ms for {}ms of audio, on_battery={on_battery:?})",
-                            speed::describe(slow.factor),
-                            slow.transcribe_ms,
-                            slow.audio_ms
-                        );
-                        speed::status_text(slow, on_battery)
-                    }
+                let status = match slow {
+                    Some(status) => status,
                     None if report.rejected.is_some() && status_for_strategy(&injection.strategy) == STATUS_INSERTED => {
                         tracing::info!(
                             "inserted, but part of the dictation was discarded ({})",
@@ -594,39 +796,101 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
                         }
                     }
                 };
-                set_look(&tray, &icons, look_for(recorder.is_recording(), processing));
-                set_status(&tray, &status_item, &status);
+                ui.set_status(status);
+                ui.set_look(look_for(rec.recorder.is_recording(), rec.processing));
+            }
+
+            UserEvent::EditDone(Ok(report)) => {
+                rec.processing = rec.processing.saturating_sub(1);
+                if rec.kind.is_none() {
+                    ui.done();
+                }
+                let record = DictationRecord {
+                    id: history::new_record_id(history::now_ms()),
+                    created_at_ms: history::now_ms(),
+                    app_name: report.ctx.app_name.clone(),
+                    bundle_id: report.ctx.bundle_id.clone(),
+                    window_title: report.ctx.window_title.clone(),
+                    format: report.ctx.profile.format,
+                    privacy: report.ctx.profile.privacy,
+                    mode: Mode::Auto,
+                    raw_text: report.instruction.clone(),
+                    model_text: None,
+                    final_text: report.text.clone(),
+                    injection_strategy: report.injection.strategy.clone(),
+                    injected_chars: report.injection.injected_chars,
+                    latency: report.latency.clone(),
+                    corrected_text: None,
+                    stt_confidence: report.confidence,
+                    rejected: None,
+                    edit: true,
+                };
+                let slow = save_record(
+                    record,
+                    &report.latency,
+                    &report.instruction,
+                    report.latency.audio_ms,
+                );
+                tracing::info!(
+                    "edit in {} via {} | {} chars selected -> {} chars | stt={}ms llm={}ms copy+paste={}ms",
+                    report.ctx.app_name,
+                    report.injection.strategy,
+                    report.selection_chars,
+                    report.injection.injected_chars,
+                    report.latency.transcribe_ms,
+                    report.latency.process_ms,
+                    report.latency.inject_ms,
+                );
+                let pasted = status_for_strategy(&report.injection.strategy);
+                ui.set_status(match slow {
+                    Some(status) => status,
+                    None if pasted != STATUS_INSERTED => pasted.to_string(),
+                    None if report.selection_chars == 0 => {
+                        "Vox: nothing was selected - inserted at cursor".to_string()
+                    }
+                    None => "Vox: edited the selection".to_string(),
+                });
+                ui.set_look(look_for(rec.recorder.is_recording(), rec.processing));
+            }
+
+            UserEvent::EditDone(Err(e)) => {
+                rec.processing = rec.processing.saturating_sub(1);
+                tracing::warn!("edit by voice failed: {e}");
+                if settings.sound_cues {
+                    cue::play(Cue::Cancel);
+                }
+                let message = edit_failure_message(&e);
+                ui.set_status(format!("Vox: {}", message.to_lowercase()));
+                if rec.kind.is_none() {
+                    ui.flash(&message);
+                }
+                ui.set_look(look_for(rec.recorder.is_recording(), rec.processing));
             }
 
             UserEvent::PipelineReady(Ok(p)) => {
                 pipeline = Some(p);
-                status = ready_status(&settings);
-                set_status(&tray, &status_item, &status);
+                ui.set_status(ready_status(&settings));
                 tracing::info!("pipeline ready");
             }
 
             UserEvent::PipelineReady(Err(e)) => {
                 tracing::error!("pipeline build failed: {e}");
-                status = format!("Vox: {e}");
-                set_status(&tray, &status_item, &status);
+                ui.set_status(format!("Vox: {e}"));
             }
 
             UserEvent::DownloadProgress(pct) => {
-                status = format!("Vox: downloading speech model... {pct}%");
-                set_status(&tray, &status_item, &status);
+                ui.set_status(format!("Vox: downloading speech model... {pct}%"));
             }
 
             UserEvent::DownloadFinished(Ok(path)) => {
                 tracing::info!("downloaded {}", path.display());
-                status = "Vox: loading speech model...".into();
-                set_status(&tray, &status_item, &status);
+                ui.set_status("Vox: loading speech model...");
                 spawn_pipeline_build(&proxy, settings.clone(), path);
             }
 
             UserEvent::DownloadFinished(Err(e)) => {
                 tracing::error!("model download failed: {e}");
-                status = "Vox: model download failed (run `vox download-model`)".into();
-                set_status(&tray, &status_item, &status);
+                ui.set_status("Vox: model download failed (run `vox download-model`)");
             }
         }
     });
@@ -634,129 +898,197 @@ pub fn run(model_override: Option<PathBuf>) -> Result<()> {
 
 const TICK: Duration = Duration::from_millis(250);
 
-#[allow(clippy::too_many_arguments)]
-fn periodic(
-    last_polled_mtime: &mut Option<SystemTime>,
-    settings: &mut Settings,
-    pipeline_settings: &mut Settings,
-    ptt: &mut PushToTalk,
-    hotkey_manager: &GlobalHotKeyManager,
-    current_hotkey: &mut Option<HotKey>,
-    hotkey_hint: &MenuItem,
-    proxy: &EventLoopProxy<UserEvent>,
-    model_path: &dyn Fn(&Settings) -> PathBuf,
-    recorder: &mut Recorder,
-    stream: &mut Option<StreamingSession>,
-    cancel_registered: &mut bool,
-    cancel_hotkey: &HotKey,
-    tray: &TrayIcon,
-    icons: &TrayIcons,
-    status_item: &MenuItem,
-    status: &mut String,
-    processing: &mut usize,
-    pipeline: &Option<Arc<Pipeline>>,
-) {
-    // Safety net for a lost key-up: never record past the cap.
-    if recorder.elapsed().is_some_and(|e| e >= MAX_RECORDING) {
-        tracing::warn!(
-            "recording hit the {}s cap; finishing",
-            MAX_RECORDING.as_secs()
-        );
-        ptt.reset();
-        finish_recording(
-            recorder,
-            stream,
-            pipeline,
-            proxy,
-            settings,
-            hotkey_manager,
-            cancel_hotkey,
-            cancel_registered,
-            tray,
-            icons,
-            status_item,
-            status,
-            processing,
-        );
-    }
-
-    let path = config::settings_path();
-    let Some(mtime) = config::settings_mtime(&path) else {
-        return;
-    };
+/// The settings file, if it changed since the last look.
+fn poll_settings(last_polled_mtime: &mut Option<SystemTime>) -> Option<Settings> {
+    let mtime = config::settings_mtime(&config::settings_path())?;
     if Some(mtime) == *last_polled_mtime {
-        return;
+        return None;
     }
     *last_polled_mtime = Some(mtime);
-    let new_settings = Settings::load();
-
-    if new_settings.hotkey != settings.hotkey {
-        if let Some(old) = current_hotkey.take() {
-            let _ = hotkey_manager.unregister(old);
-        }
-        let mut error = None;
-        if new_settings.hotkey.enabled {
-            match register_hotkey(hotkey_manager, &new_settings.hotkey) {
-                Ok(k) => *current_hotkey = Some(k),
-                Err(e) => {
-                    tracing::warn!("hotkey re-register failed: {e}");
-                    error = Some(e.to_string());
-                    // best-effort restore of the previous binding
-                    if let Ok(k) = register_hotkey(hotkey_manager, &settings.hotkey) {
-                        *current_hotkey = Some(k);
-                    }
-                }
-            }
-        }
-        hotkey_hint.set_text(hotkey_hint_text(&new_settings.hotkey, error.as_deref()));
-        ptt.set_mode(new_settings.hotkey.mode);
-    }
-
-    if pipeline_settings_changed(pipeline_settings, &new_settings) {
-        let model = model_path(&new_settings);
-        if model.exists() {
-            spawn_pipeline_build(proxy, new_settings.clone(), model);
-        } else {
-            tracing::warn!(
-                "whisper model {} not found; keeping the current one",
-                model.display()
-            );
-        }
-        *pipeline_settings = new_settings.clone();
-    }
-    recorder.set_device(new_settings.input_device.clone());
-    *settings = new_settings;
+    Some(Settings::load())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finish_recording(
-    recorder: &mut Recorder,
-    stream: &mut Option<StreamingSession>,
+/// Adds a finished dictation or edit to history and the usage stats.
+/// Returns the status to show instead of the usual one if it was slow.
+fn save_record(
+    record: DictationRecord,
+    latency: &LatencyMetrics,
+    spoken: &str,
+    audio_ms: u64,
+) -> Option<String> {
+    let slow = speed::check(latency, &history::load_history());
+    if let Err(e) = history::append_record(record) {
+        tracing::warn!("history append failed: {e}");
+    }
+    if let Err(e) = stats::record_dictation(spoken, audio_ms) {
+        tracing::warn!("stats update failed: {e}");
+    }
+    slow.map(|slow| {
+        let on_battery = speed::on_battery();
+        tracing::warn!(
+            "slow transcription: {} ({}ms for {}ms of audio, on_battery={on_battery:?})",
+            speed::describe(slow.factor),
+            slow.transcribe_ms,
+            slow.audio_ms
+        );
+        speed::status_text(&slow, on_battery)
+    })
+}
+
+/// Why edit by voice can't run here at all, checked before the microphone
+/// opens so nobody speaks an instruction for nothing.
+fn edit_unavailable(
+    settings: &Settings,
+    ctx: Option<&AppContext>,
+    llm: Option<bool>,
+) -> Option<&'static str> {
+    if !settings.auto_paste {
+        Some("Edit by voice needs auto-paste - turn it on in Settings")
+    } else if !settings.llm_cleanup || llm.is_none() {
+        Some("Edit by voice needs LLM cleanup - turn it on in Settings")
+    } else if ctx.is_some_and(|c| c.profile.format == Format::Shell) {
+        Some("Edit by voice is off in terminals")
+    } else if llm == Some(false) {
+        Some("Edit by voice needs your LLM server running (see vox doctor)")
+    } else {
+        None
+    }
+}
+
+/// A short explanation of a failed edit, for the bubble and the tray.
+fn edit_failure_message(error: &str) -> String {
+    let e = error.to_ascii_lowercase();
+    if e.contains("didn't catch") {
+        "Didn't catch the instruction".into()
+    } else if e.contains("didn't answer") || e.contains("returned nothing") {
+        "The LLM didn't answer - nothing was changed".into()
+    } else if e.contains("too long") {
+        "Selection is too long to edit".into()
+    } else if e.contains("privacy blocked") {
+        "Vox is off in this app".into()
+    } else if e.contains("terminals") {
+        "Edit by voice is off in terminals".into()
+    } else {
+        "Edit failed - nothing was changed".into()
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Opens the microphone for a dictation or an edit. False if it didn't
+/// start (the hotkey's state machine should then be reset).
+fn start_recording(
+    kind: Kind,
+    rec: &mut Recording,
     pipeline: &Option<Arc<Pipeline>>,
     proxy: &EventLoopProxy<UserEvent>,
     settings: &Settings,
-    hotkey_manager: &GlobalHotKeyManager,
-    cancel_hotkey: &HotKey,
-    cancel_registered: &mut bool,
-    tray: &TrayIcon,
-    icons: &TrayIcons,
-    status_item: &MenuItem,
-    status: &mut String,
-    processing: &mut usize,
+    keys: &mut Hotkeys,
+    ui: &mut Ui,
+) -> bool {
+    let Some(ref p) = pipeline else {
+        if settings.sound_cues {
+            cue::play(Cue::Cancel);
+        }
+        // keep the download/loading status visible
+        ui.show_status();
+        return false;
+    };
+    // Check the privacy switch *before* opening the mic, not after
+    // recording someone's password.
+    let start_ctx = p.detector.current().ok();
+    if let Some(ref ctx) = start_ctx {
+        if ctx.profile.privacy == Privacy::Disabled {
+            if settings.sound_cues {
+                cue::play(Cue::Cancel);
+            }
+            ui.set_status(format!("Vox: off in {}", ctx.app_name));
+            return false;
+        }
+    }
+    if kind == Kind::Edit {
+        if let Some(why) = edit_unavailable(settings, start_ctx.as_ref(), p.llm_status()) {
+            if settings.sound_cues {
+                cue::play(Cue::Cancel);
+            }
+            ui.set_status(format!("Vox: {}", why.to_lowercase()));
+            ui.flash(why);
+            return false;
+        }
+    }
+    match rec.recorder.start() {
+        Ok(()) => {
+            if settings.sound_cues {
+                cue::play(Cue::Start);
+            }
+            rec.session += 1;
+            rec.kind = Some(kind);
+            let ctx = start_ctx.unwrap_or_else(AppContext::unknown);
+            rec.stream = settings.streaming_transcription.then(|| {
+                let live = settings
+                    .live_text
+                    .then(|| live_text(p, &ctx, proxy, rec.session));
+                start_stream(p, &rec.recorder, ctx, live)
+            });
+            keys.register_cancel();
+            ui.set_look(Look::Recording);
+            ui.listen(rec.session, kind, &settings.hotkey, &rec.recorder);
+            let hotkey = match kind {
+                Kind::Dictate => &settings.hotkey,
+                Kind::Edit => &settings.edit_hotkey,
+            };
+            ui.set_status(match kind {
+                Kind::Dictate => format!(
+                    "Vox: listening... ({} to finish, Esc to cancel)",
+                    hk::display_label(hotkey)
+                ),
+                Kind::Edit => format!(
+                    "Vox: say how to change the selection ({} to finish, Esc to cancel)",
+                    hk::display_label(hotkey)
+                ),
+            });
+            true
+        }
+        Err(e) => {
+            tracing::error!("recorder start failed: {e}");
+            if settings.sound_cues {
+                cue::play(Cue::Cancel);
+            }
+            ui.set_status(format!("Vox: {e}"));
+            false
+        }
+    }
+}
+
+fn finish_recording(
+    rec: &mut Recording,
+    pipeline: &Option<Arc<Pipeline>>,
+    proxy: &EventLoopProxy<UserEvent>,
+    settings: &Settings,
+    keys: &mut Hotkeys,
+    ui: &mut Ui,
 ) {
-    unregister_cancel(hotkey_manager, cancel_hotkey, cancel_registered);
+    keys.unregister_cancel();
+    let kind = rec.kind.take().unwrap_or(Kind::Dictate);
     // Streaming: most of the audio is already transcribed; the session
     // finishes the rest. Otherwise transcribe the whole clip now.
-    let source = match stream.take() {
+    let speech = match rec.stream.take() {
         Some(session) => {
-            recorder.stop_capture();
-            Captured::Streamed(session)
+            rec.recorder.stop_capture();
+            Speech::Streamed(session)
         }
-        None => match recorder.stop() {
-            Ok(a) => Captured::Clip(a),
+        None => match rec.recorder.stop() {
+            Ok(a) => Speech::Clip(a),
             Err(e) => {
                 tracing::warn!("recorder stop failed: {e}");
-                set_look(tray, icons, look_for(false, *processing));
+                ui.done();
+                ui.set_look(look_for(false, rec.processing));
                 return;
             }
         },
@@ -765,7 +1097,8 @@ fn finish_recording(
         cue::play(Cue::Stop);
     }
     let Some(p) = pipeline.as_ref() else {
-        set_look(tray, icons, look_for(false, *processing));
+        ui.done();
+        ui.set_look(look_for(false, rec.processing));
         return;
     };
 
@@ -774,54 +1107,70 @@ fn finish_recording(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("app detection failed (canceling dictation): {e}");
-            *status = "Vox: couldn't detect the active app".into();
-            set_status(tray, status_item, status);
-            set_look(tray, icons, look_for(false, *processing));
+            ui.set_status("Vox: couldn't detect the active app");
+            ui.flash("Couldn't detect the active app");
+            ui.set_look(look_for(false, rec.processing));
             return;
         }
     };
 
-    *processing += 1;
-    *status = "Vox: transcribing...".into();
-    set_status(tray, status_item, status);
-    set_look(tray, icons, Look::Processing);
+    rec.processing += 1;
+    ui.set_status(match kind {
+        Kind::Dictate => "Vox: transcribing...",
+        Kind::Edit => "Vox: editing...",
+    });
+    ui.set_look(Look::Processing);
+    ui.working(kind);
 
     let p = Arc::clone(p);
     let proxy = proxy.clone();
     thread::spawn(move || {
-        let result = match source {
-            Captured::Clip(audio) => p.prepare_with_ctx(&audio, ctx, Mode::Auto),
-            Captured::Streamed(session) => p.prepare_streamed(session, ctx, Mode::Auto),
-        }
-        .map_err(|e| e.to_string());
-        let _ = proxy.send_event(UserEvent::Done(result));
+        let event = match kind {
+            Kind::Dictate => UserEvent::Done(
+                match speech {
+                    Speech::Clip(audio) => p.prepare_with_ctx(&audio, ctx, Mode::Auto),
+                    Speech::Streamed(session) => p.prepare_streamed(session, ctx, Mode::Auto),
+                }
+                .map_err(|e| e.to_string()),
+            ),
+            Kind::Edit => UserEvent::EditDone(p.edit(speech, ctx).map_err(|e| e.to_string())),
+        };
+        let _ = proxy.send_event(event);
     });
-}
-
-enum Captured {
-    Clip(AudioChunk),
-    Streamed(StreamingSession),
 }
 
 /// Starts transcribing the dictation `recorder` just started capturing,
 /// segment by segment, on the pipeline's Whisper.
-fn start_stream(p: &Arc<Pipeline>, recorder: &Recorder, ctx: AppContext) -> StreamingSession {
+fn start_stream(
+    p: &Arc<Pipeline>,
+    recorder: &Recorder,
+    ctx: AppContext,
+    live: Option<Live>,
+) -> StreamingSession {
     let p = Arc::clone(p);
-    StreamingSession::start(recorder.tap(), move |audio, hint| {
-        p.transcriber.transcribe_segment(audio, &ctx, hint)
-    })
+    StreamingSession::start_live(
+        recorder.tap(),
+        move |audio, hint| p.transcriber.transcribe_segment(audio, &ctx, hint),
+        live,
+    )
 }
 
-fn register_cancel(manager: &GlobalHotKeyManager, key: &HotKey, registered: &mut bool) {
-    if !*registered {
-        *registered = manager.register(*key).is_ok();
-    }
-}
-
-fn unregister_cancel(manager: &GlobalHotKeyManager, key: &HotKey, registered: &mut bool) {
-    if *registered {
-        let _ = manager.unregister(*key);
-        *registered = false;
+/// Live text for recording number `session`: previews from the pipeline's
+/// Whisper, delivered to the event loop.
+fn live_text(
+    p: &Arc<Pipeline>,
+    ctx: &AppContext,
+    proxy: &EventLoopProxy<UserEvent>,
+    session: u64,
+) -> Live {
+    let p = Arc::clone(p);
+    let ctx = ctx.clone();
+    let proxy = proxy.clone();
+    Live {
+        preview: Box::new(move |audio, hint, stop| p.transcriber.preview(audio, &ctx, hint, stop)),
+        sink: Box::new(move |text| {
+            let _ = proxy.send_event(UserEvent::Live(session, text));
+        }),
     }
 }
 
@@ -945,6 +1294,17 @@ fn hotkey_hint_text(cfg: &HotkeyConfig, error: Option<&str>) -> String {
     format!("Hotkey: {label} ({how})")
 }
 
+fn edit_hint_text(cfg: &HotkeyConfig, error: Option<&str>) -> String {
+    if !cfg.enabled {
+        return "Edit by voice: off".into();
+    }
+    let label = hk::display_label(cfg);
+    match error {
+        Some(e) => format!("Edit by voice {label} unavailable: {e}"),
+        None => format!("Edit by voice: select text, then {label}"),
+    }
+}
+
 fn register_hotkey(manager: &GlobalHotKeyManager, cfg: &HotkeyConfig) -> Result<HotKey> {
     let hotkey = hk::hotkey_from_config(cfg)?;
     manager.register(hotkey).map_err(|e| {
@@ -1048,5 +1408,65 @@ mod llm_status_tests {
         assert!(llm_off_status(Some(false), "English")
             .unwrap()
             .contains("untranslated"));
+    }
+
+    fn ctx(format: Format) -> AppContext {
+        AppContext {
+            profile: crate::model::AppProfile {
+                format,
+                privacy: Privacy::LocalOnly,
+            },
+            ..AppContext::unknown()
+        }
+    }
+
+    #[test]
+    fn edit_is_refused_before_listening_when_it_cant_work() {
+        let ok = Settings::with_defaults();
+        let prose = ctx(Format::CleanProse);
+        assert_eq!(edit_unavailable(&ok, Some(&prose), Some(true)), None);
+        // Unknown app: allowed, the pipeline checks again.
+        assert_eq!(edit_unavailable(&ok, None, Some(true)), None);
+
+        let mut no_paste = ok.clone();
+        no_paste.auto_paste = false;
+        assert!(edit_unavailable(&no_paste, Some(&prose), Some(true))
+            .unwrap()
+            .contains("auto-paste"));
+
+        let mut no_llm = ok.clone();
+        no_llm.llm_cleanup = false;
+        assert!(edit_unavailable(&no_llm, Some(&prose), None)
+            .unwrap()
+            .contains("LLM cleanup"));
+
+        assert!(edit_unavailable(&ok, Some(&ctx(Format::Shell)), Some(true))
+            .unwrap()
+            .contains("terminals"));
+        assert!(edit_unavailable(&ok, Some(&prose), Some(false))
+            .unwrap()
+            .contains("LLM server"));
+    }
+
+    #[test]
+    fn edit_failures_read_as_what_happened() {
+        assert_eq!(
+            edit_failure_message("transcription error: didn't catch the instruction"),
+            "Didn't catch the instruction"
+        );
+        assert_eq!(
+            edit_failure_message("processing error: Ollama (llama3.2) didn't answer: refused"),
+            "The LLM didn't answer - nothing was changed"
+        );
+        assert_eq!(
+            edit_failure_message(
+                "processing error: selection is too long to edit (over 12000 characters)"
+            ),
+            "Selection is too long to edit"
+        );
+        assert_eq!(
+            edit_failure_message("injection error: clipboard busy"),
+            "Edit failed - nothing was changed"
+        );
     }
 }

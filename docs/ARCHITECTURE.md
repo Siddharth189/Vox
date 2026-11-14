@@ -96,6 +96,48 @@ paste at the cursor.
    are refused unless `VOX_ALLOW_REMOTE_LLM=1`, both in the probe and in the
    request itself.
 
+## Edit by voice
+
+A second hotkey (`edit_hotkey`, default `Ctrl+Shift+.`) records an instruction instead of
+dictation. Before the mic opens the tray refuses what can't work: auto-paste or LLM cleanup off,
+a terminal profile (Ctrl+C would interrupt the program), or an LLM server the probe says is down.
+On stop, `Pipeline::edit` runs, in this order:
+
+1. Privacy check, then `TextInjector::begin_edit`: the clipboard is saved, a unique marker put on
+   it, and Ctrl/Cmd+C sent. If the marker is replaced within 600 ms that's the selection;
+   otherwise nothing was selected. This happens first, while the target app still has focus.
+2. The instruction is transcribed as is (no voice commands or cleanup).
+3. `TextProcessor::edit` asks the LLM (`process/edit.rs`: rules, four examples, the selection
+   wrapped as data so instructions inside it aren't followed). The selection's surrounding
+   whitespace is kept so the result fits back in. There is no rule-based fallback.
+4. `finish_edit` pastes the result over the selection and restores the original clipboard.
+
+Any failure calls `abort_edit` (and the clipboard lease restores itself if dropped), so a failed
+edit pastes nothing and leaves the clipboard as it was. History records the instruction and the
+result with `edit: true`, never the selected text.
+
+## Live text
+
+With `live_text` on, the streaming session also previews the audio not yet cut into a segment
+(`stt/streaming.rs`, `Previewer`): at least 0.6 s of new speech, at most every 500 ms or three
+times the last preview's time, whichever is longer, and never again in that dictation once one
+takes over 2.5 s. `Transcriber::preview` (`LocalWhisper::run_preview`) is a single pass with no
+retries and no language detection when a language is already known (from earlier segments, or
+the one last heard clearly); it never updates the remembered language, so it can't change the
+real transcription. Previews never reach the pasted text. Stopping sets a flag that whisper.cpp's
+abort callback polls. In the bundled whisper.cpp that check runs after each encoder pass and
+decoder step, not inside the encoder, so a preview caught mid-encode can still add part of one
+encoder pass to the wait. Previews also skip stretches with no new speech, which is when people
+stop. Measured on a 4-core laptop (base model, 18 s recording): about 0.1 s more wait on average
+(30-220 ms), with the pasted text identical; `vox transcribe FILE.wav --stream --live` reproduces
+it.
+
+Updates go to the tray as `UserEvent::Live(session, text)`: settled segments plus the current
+preview. The session number drops late updates from a finished recording. On Windows,
+`overlay/windows.rs` draws them in a layered, click-through, never-activated popup with GDI (so
+Devanagari and other complex scripts shape correctly), with a level meter read from the
+recorder's `LiveTap`. Elsewhere the tray title shows the last few words.
+
 ## Usage stats
 
 `stats.rs` keeps lifetime totals in `stats.json`: dictations, words, speech

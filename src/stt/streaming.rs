@@ -24,8 +24,16 @@
 //!   language found in the first segment is kept for the rest;
 //! - if any segment fails, the whole recording is transcribed in one go at
 //!   the end, exactly as without streaming.
+//!
+//! Live text: between segments the worker can also decode the audio not yet
+//! cut, as a throwaway preview, so the words show up while the user is still
+//! speaking (see [`Live`]). Previews never feed the pasted text, are paced
+//! by how long they take, and are abandoned the moment the user stops: at
+//! the end of the encoder pass in progress, the earliest whisper.cpp allows.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -60,6 +68,23 @@ const PEAK_PERCENTILE: f32 = 0.95;
 const POLL: Duration = Duration::from_millis(150);
 /// Prior text passed to Whisper as context for the next segment.
 const MAX_CONTEXT_CHARS: usize = 200;
+/// A live preview needs this much new speech to say anything useful.
+const PREVIEW_MIN_SECS: f32 = 0.6;
+/// And at least this much more audio than the previous preview had.
+const PREVIEW_STEP_SECS: f32 = 0.4;
+/// Previews wait at least this long, and at least three times what the
+/// last one took, so they use at most a quarter of the worker's time. The
+/// share matters: whisper.cpp only checks for abort between encoder passes,
+/// so a preview caught mid-encode when the user stops still delays the
+/// text by what's left of that pass. Measured on a 4-core laptop (base
+/// model, 18 s recording, 3 runs each): spaced at 2x with a language
+/// detection pass per preview, stop waited 100-330 ms longer; at 3x, with
+/// no detection and no previews of silence, 30-220 ms (about 0.1 s).
+const PREVIEW_MIN_INTERVAL: Duration = Duration::from_millis(500);
+const PREVIEW_SPACING: u32 = 3;
+/// A preview slower than this means the machine can't keep up: stop
+/// previewing for the rest of the dictation rather than fall behind.
+const PREVIEW_TOO_SLOW: Duration = Duration::from_millis(2500);
 
 /// Splits a growing stream of raw mono samples into speech segments at
 /// pauses. Pure and synchronous, so the cut rules are testable without
@@ -99,6 +124,11 @@ impl Segmenter {
 
     pub fn pending_secs(&self) -> f32 {
         self.pending.len() as f32 / self.rate as f32
+    }
+
+    /// The raw samples not yet cut into a segment.
+    pub fn pending(&self) -> &[f32] {
+        &self.pending
     }
 
     fn windows_for_secs(&self, secs: f32) -> usize {
@@ -269,6 +299,36 @@ pub struct StreamOutcome {
     pub work_ms: u64,
 }
 
+/// What has been said so far in a dictation in progress, for showing it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveText {
+    /// Segments already transcribed for real.
+    pub settled: String,
+    /// A throwaway preview of the speech since then; still changing.
+    pub pending: String,
+}
+
+impl LiveText {
+    /// Both parts as one line.
+    pub fn full(&self) -> String {
+        match (self.settled.is_empty(), self.pending.is_empty()) {
+            (_, true) => self.settled.clone(),
+            (true, false) => self.pending.clone(),
+            (false, false) => format!("{} {}", self.settled, self.pending),
+        }
+    }
+}
+
+/// Decodes audio for a live preview; gives up when the flag is set.
+pub type PreviewFn = dyn FnMut(&AudioChunk, &SegmentHint, &AtomicBool) -> Option<String> + Send;
+
+/// Live text for a streaming session: how to preview the speech since the
+/// last segment, and where to send the text as it changes.
+pub struct Live {
+    pub preview: Box<PreviewFn>,
+    pub sink: Box<dyn FnMut(LiveText) + Send>,
+}
+
 enum Signal {
     Finish,
     Cancel,
@@ -284,6 +344,8 @@ pub type SegmentFn = dyn FnMut(&AudioChunk, &SegmentHint) -> Result<Transcript> 
 pub struct StreamingSession {
     control: Sender<Signal>,
     handle: Option<JoinHandle<Option<Result<StreamOutcome>>>>,
+    /// Set when the user stops: abandons a live preview in progress.
+    stop_preview: Arc<AtomicBool>,
 }
 
 impl StreamingSession {
@@ -291,17 +353,36 @@ impl StreamingSession {
     where
         F: FnMut(&AudioChunk, &SegmentHint) -> Result<Transcript> + Send + 'static,
     {
+        Self::start_live(tap, transcribe, None)
+    }
+
+    /// Like `start`, also reporting the text as it's spoken when `live` is
+    /// given.
+    pub fn start_live<F>(tap: LiveTap, transcribe: F, live: Option<Live>) -> Self
+    where
+        F: FnMut(&AudioChunk, &SegmentHint) -> Result<Transcript> + Send + 'static,
+    {
         let (control, rx) = mpsc::channel();
+        let stop_preview = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stop_preview);
         let handle = thread::Builder::new()
             .name("vox-stream-stt".into())
-            .spawn(move || worker(tap, rx, Box::new(transcribe)))
+            .spawn(move || {
+                let live = live.map(|live| Previewer::new(live, stop));
+                worker(tap, rx, Box::new(transcribe), live)
+            })
             .ok();
-        Self { control, handle }
+        Self {
+            control,
+            handle,
+            stop_preview,
+        }
     }
 
     /// Call once capture has stopped: transcribes what's left and returns
     /// the whole dictation's text.
     pub fn finish(mut self) -> Result<StreamOutcome> {
+        self.stop_preview.store(true, Ordering::Relaxed);
         let _ = self.control.send(Signal::Finish);
         let handle = self
             .handle
@@ -318,6 +399,7 @@ impl StreamingSession {
 impl Drop for StreamingSession {
     fn drop(&mut self) {
         if self.handle.is_some() {
+            self.stop_preview.store(true, Ordering::Relaxed);
             let _ = self.control.send(Signal::Cancel);
         }
     }
@@ -449,10 +531,101 @@ impl Progress {
     }
 }
 
+/// Live previews of the audio not yet cut into a segment.
+struct Previewer {
+    live: Live,
+    stop: Arc<AtomicBool>,
+    /// Pending samples the last preview covered (since the last cut).
+    covered: usize,
+    /// Segments kept when the text was last sent.
+    sent_segments: u32,
+    next_at: Instant,
+    /// Off for the rest of the dictation once a preview was too slow.
+    enabled: bool,
+    shown: LiveText,
+}
+
+impl Previewer {
+    fn new(live: Live, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            live,
+            stop,
+            covered: 0,
+            sent_segments: 0,
+            next_at: Instant::now(),
+            enabled: true,
+            shown: LiveText::default(),
+        }
+    }
+
+    fn send(&mut self, text: LiveText) {
+        if text != self.shown {
+            self.shown = text.clone();
+            (self.live.sink)(text);
+        }
+    }
+
+    /// Called after every poll, once the segments that were ready are done.
+    fn update(&mut self, segmenter: &Segmenter, progress: &Progress, rate: u32) {
+        if self.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let settled = progress.texts.join(" ");
+        // A segment was kept: its text replaces the preview of it.
+        if progress.segments != self.sent_segments {
+            self.sent_segments = progress.segments;
+            self.covered = 0;
+            self.send(LiveText {
+                settled: settled.clone(),
+                pending: String::new(),
+            });
+        }
+        let pending = segmenter.pending();
+        let step = (PREVIEW_STEP_SECS * rate as f32) as usize;
+        if !self.enabled
+            || segmenter.pending_secs() < PREVIEW_MIN_SECS
+            || pending.len() < self.covered + step
+            || Instant::now() < self.next_at
+        {
+            return;
+        }
+        // Only new speech is worth a preview. Silence since the last one
+        // adds no words, and it's when people stop: a preview started then
+        // is the one most likely to still be running when they do.
+        if audio::is_silent(&pending[self.covered.min(pending.len())..], rate) {
+            return;
+        }
+        let chunk = audio::finish_capture(pending, rate);
+        if chunk.samples.is_empty() || audio::is_silent(&chunk.samples, chunk.sample_rate) {
+            return;
+        }
+        self.covered = pending.len();
+        let started = Instant::now();
+        let text = (self.live.preview)(&chunk, &progress.hint(), &self.stop);
+        let took = started.elapsed();
+        if self.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        if took > PREVIEW_TOO_SLOW {
+            tracing::info!(
+                "live preview took {} ms; off for the rest of this dictation",
+                took.as_millis()
+            );
+            self.enabled = false;
+        }
+        self.next_at = Instant::now() + PREVIEW_MIN_INTERVAL.max(took * PREVIEW_SPACING);
+        if let Some(text) = text {
+            let pending = strip_echo(text.trim(), &progress.texts).to_string();
+            self.send(LiveText { settled, pending });
+        }
+    }
+}
+
 fn worker(
     tap: LiveTap,
     rx: Receiver<Signal>,
     mut transcribe: Box<SegmentFn>,
+    mut live: Option<Previewer>,
 ) -> Option<Result<StreamOutcome>> {
     let rate = tap.sample_rate();
     let mut segmenter = Segmenter::new(rate);
@@ -480,6 +653,11 @@ fn worker(
                     return Some(finish(tap, segmenter, read_pos, progress, transcribe))
                 }
                 Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(live) = live.as_mut() {
+            if progress.failed.is_none() {
+                live.update(&segmenter, &progress, rate);
             }
         }
     }
@@ -1142,5 +1320,98 @@ mod tests {
         tap.push(&two_sentences_and_a_tail());
         std::thread::sleep(POLL * 3);
         assert_eq!(fake.calls.lock().unwrap().len(), 0);
+    }
+
+    /// What the live text sink was sent, and how many previews ran.
+    type Shown = Arc<Mutex<Vec<LiveText>>>;
+    type PreviewCount = Arc<Mutex<usize>>;
+
+    /// Live text: a recording preview function and sink.
+    fn live_recorder(
+        preview_text: &'static str,
+        preview_delay: Duration,
+    ) -> (Live, Shown, PreviewCount) {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let previews = Arc::new(Mutex::new(0usize));
+        let sink_shown = Arc::clone(&shown);
+        let count = Arc::clone(&previews);
+        let live = Live {
+            preview: Box::new(move |_chunk, _hint, stop| {
+                *count.lock().unwrap() += 1;
+                let until = Instant::now() + preview_delay;
+                while Instant::now() < until {
+                    if stop.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Some(preview_text.to_string())
+            }),
+            sink: Box::new(move |text| sink_shown.lock().unwrap().push(text)),
+        };
+        (live, shown, previews)
+    }
+
+    #[test]
+    fn live_previews_show_while_speaking_but_never_reach_the_transcript() {
+        let fake = Fake::new(None);
+        let tap = LiveTap::new(RATE);
+        let (live, shown, previews) = live_recorder("live words", Duration::ZERO);
+        let session = StreamingSession::start_live(tap.clone(), fake.func(), Some(live));
+        // Speak in real time-ish so the worker polls between chunks.
+        for chunk in two_sentences_and_a_tail().chunks(RATE as usize / 2) {
+            tap.push(chunk);
+            std::thread::sleep(POLL);
+        }
+        wait_for_calls(&fake.calls, 2);
+        std::thread::sleep(PREVIEW_MIN_INTERVAL + POLL * 2);
+        let out = session.finish().unwrap();
+
+        // The pasted text is exactly what it is without live text.
+        assert_eq!(
+            out.transcript.text,
+            "Segment number 1. Segment number 2. Segment number 3."
+        );
+        assert_eq!(out.segments, 3);
+        assert!(*previews.lock().unwrap() >= 2, "previewed while speaking");
+        let shown = shown.lock().unwrap();
+        assert!(shown
+            .iter()
+            .any(|t| t.settled.is_empty() && t.pending == "live words"));
+        // A kept segment replaces the preview of it.
+        assert!(shown
+            .iter()
+            .any(|t| t.settled == "Segment number 1." && t.pending.is_empty()));
+        assert!(shown
+            .iter()
+            .any(|t| t.full() == "Segment number 1. Segment number 2. live words"));
+        // Each update differs from the one before it.
+        assert!(shown.windows(2).all(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn stopping_abandons_a_preview_in_progress() {
+        let fake = Fake::new(None);
+        let tap = LiveTap::new(RATE);
+        // A preview that would take 10 s unless told to stop.
+        let (live, _, previews) = live_recorder("slow", Duration::from_secs(10));
+        let session = StreamingSession::start_live(tap.clone(), fake.func(), Some(live));
+        tap.push(&tone(2.0));
+        let started = Instant::now();
+        while *previews.lock().unwrap() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "no preview started"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stop_at = Instant::now();
+        let out = session.finish().unwrap();
+        assert!(
+            stop_at.elapsed() < Duration::from_secs(1),
+            "finish waited {:?} for the preview",
+            stop_at.elapsed()
+        );
+        assert_eq!(out.transcript.text, "Segment number 1.");
     }
 }

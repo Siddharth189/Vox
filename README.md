@@ -151,6 +151,11 @@ cargo build --release --locked
   file"), and never inserts line breaks into a terminal.
 - **Snippets.** Say *"my calendar link"* or *"my signature"* and Vox types the stored text exactly
   as written, line breaks and all.
+- **Edit by voice.** Select text, press `Ctrl+Shift+.`, and say how to change it: *"make it
+  shorter"*, *"more polite"*, *"isko English mein kar do"*. Your local LLM rewrites the selection
+  in place. With nothing selected, say what to write.
+- **See your words as you speak.** A small bubble above the taskbar shows a level meter and the
+  text as it comes, so you know Vox is hearing you (Windows; the tray title on macOS and Linux).
 - **Long dictations finish fast.** Vox transcribes while you talk, cutting the audio at natural
   pauses. When you stop, only the last few seconds are left, so a 40-second paragraph doesn't
   make you wait much longer than a quick reply. Turn it off with **Transcribe while you speak**
@@ -196,6 +201,23 @@ while you speak and let go). Press `Esc` to cancel.
 
 Open **Settings** from the tray menu, or go to <http://127.0.0.1:8722>.
 
+### Edit by voice
+
+Select some text, press **`Ctrl+Shift+.`**, say what to do with it, and press it again (or hold
+it while you speak). The selection is replaced with the result. `Ctrl+Z` in the app undoes it.
+
+| Selected | Say | You get |
+|---|---|---|
+| "send me the report now" | "make it more polite" | "Could you please send me the report when you get a chance?" |
+| "kal ki meeting 5 baje hai" | "isko English mein kar do" | "Tomorrow's meeting is at 5." |
+| "He don't know where the files is." | "fix the grammar" | "He doesn't know where the files are." |
+| *(nothing)* | "write a short thank-you note to Priya" | a note, typed at the cursor |
+
+It uses your [local LLM](#optional-polish-with-a-local-llm), so it needs LLM cleanup and
+auto-paste on, and a model running. It's off in terminals, where Ctrl+C would stop the program.
+In code editors that copy the whole line when nothing is selected (VS Code, JetBrains), select
+what you want changed first.
+
 ### Voice commands
 
 | Say | You get |
@@ -221,6 +243,7 @@ vox devices                   list microphones (* = selected)
 vox listen [--secs 5]         record once from the mic and print the cleaned result
 vox transcribe FILE.wav       transcribe a recording (benchmarks, bug reports)
                 [--stream]    ...played in real time through streaming; prints the wait after stop
+                [--live]      ...and the live text as it changes
 vox demo [--dry-run] "text"   run text through cleanup, voice commands, and snippets
 vox inject-test "text"        test auto-paste on its own
 vox autostart on|off|status   launch the tray at login
@@ -283,6 +306,8 @@ It holds `settings.yaml`, `history.json` (last 100 dictations), `stats.json` (co
 
 ```yaml
 hotkey: { enabled: true, modifiers: [control], key: Period, mode: hybrid }  # hybrid | hold | toggle
+edit_hotkey: { enabled: true, modifiers: [control, shift], key: Period, mode: hybrid }
+live_text: true                 # show words as you speak
 input_language: auto
 output_language: auto
 streaming_transcription: true   # transcribe while you speak
@@ -382,9 +407,8 @@ comment on the existing one) to agree on the approach before you start.
 
 - [ ] Wayland global shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal
 - [ ] Signed installers: `.msi` for Windows, notarized `.dmg` for macOS, AppImage/Flatpak for Linux
-- [ ] Live transcript preview while you speak
+- [ ] Live text window on macOS and Linux (today: the tray title)
 - [ ] More speech backends (NVIDIA Parakeet, Moonshine) behind the existing `Transcriber` trait
-- [ ] "Edit selection" mode: select text, speak an instruction, and Vox rewrites the selection
 - [ ] Per-app snippets and per-app custom vocabulary
 - [ ] Settings import/export
 - [ ] Localized settings UI

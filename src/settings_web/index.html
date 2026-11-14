@@ -369,6 +369,40 @@
       </div>
       <div class="field-row">
         <div class="field-info">
+          <div class="field-title">Edit by voice</div>
+          <div class="field-desc">Select text, press this, and say how to change it: &ldquo;make it shorter&rdquo;, &ldquo;more polite&rdquo;, &ldquo;isko English mein kar do&rdquo;. With nothing selected, say what to write. Needs LLM cleanup and auto-paste; off in terminals.</div>
+        </div>
+        <div class="field-control">
+          <div class="row">
+            <button type="button" class="hotkey-capture" id="edit_hotkey_capture" title="Click, then press a new shortcut">Ctrl + Shift + .</button>
+            <select id="edit_hotkey_mode">
+              <option value="hybrid">Tap or hold</option>
+              <option value="hold">Hold to talk</option>
+              <option value="toggle">Press to start/stop</option>
+            </select>
+          </div>
+          <div class="field-hint">
+            <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.82rem;color:var(--muted)">
+              <input id="edit_hotkey_enabled" type="checkbox" style="width:auto" /> Enabled
+            </label>
+            &nbsp;·&nbsp;<span id="edit_hotkey_hint">Click the shortcut to change it.</span>
+          </div>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Live text</div>
+          <div class="field-desc">Shows your words while you speak, with a level meter, in a small bubble above the taskbar. The pasted text is the same either way. Words appear as you go when streaming transcription is on.</div>
+        </div>
+        <div class="field-control" style="text-align:right">
+          <label class="switch">
+            <input id="live_text" type="checkbox" />
+            <span class="track"></span>
+          </label>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-info">
           <div class="field-title">Microphone</div>
           <div class="field-desc">Falls back to the system default when the chosen one isn't connected.</div>
         </div>

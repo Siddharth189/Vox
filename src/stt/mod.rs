@@ -2,7 +2,9 @@ mod local_whisper;
 pub mod streaming;
 
 pub use local_whisper::LocalWhisper;
-pub use streaming::{SegmentHint, StreamOutcome, StreamingSession};
+pub use streaming::{Live, LiveText, SegmentHint, StreamOutcome, StreamingSession};
+
+use std::sync::atomic::AtomicBool;
 
 use crate::error::Result;
 use crate::model::{AppContext, AudioChunk, Transcript};
@@ -20,6 +22,22 @@ pub trait Transcriber: Send + Sync {
     ) -> Result<Transcript> {
         let _ = hint;
         self.transcribe(audio, ctx)
+    }
+
+    /// A quick, throwaway transcription of a dictation still in progress,
+    /// only for showing it live. Never used for the text that gets pasted.
+    /// Implementations give up as soon as they can once `stop` is set (the
+    /// user finished, so nobody should wait for a preview), and must not
+    /// change anything later transcriptions depend on. `None`: no preview.
+    fn preview(
+        &self,
+        audio: &AudioChunk,
+        ctx: &AppContext,
+        hint: &SegmentHint,
+        stop: &AtomicBool,
+    ) -> Option<String> {
+        let _ = (audio, ctx, hint, stop);
+        None
     }
 
     fn name(&self) -> &'static str;

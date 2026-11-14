@@ -8,6 +8,7 @@ use crate::config::{LlmProvider, Settings};
 use crate::error::{Result, VoxError};
 use crate::model::{EnrichedRequest, ProcessedText};
 use crate::process::dictionary::normalize_processed_text;
+use crate::process::edit;
 use crate::process::prompt::{
     code_switch_fewshot, effective_system_prompt, fewshot, rewrite_only_user_message,
 };
@@ -172,6 +173,30 @@ impl OllamaProcessor {
         });
 
         messages
+    }
+
+    /// Edit by voice through the same server, model, and checks as cleanup.
+    pub fn edit(&self, instruction: &str, selection: &str) -> Result<String> {
+        edit::check(instruction, selection)?;
+        if !llm_url_permitted(&self.host) {
+            return Err(VoxError::Processing(format!(
+                "{} is not on this machine; set {ALLOW_REMOTE_ENV}=1 to allow it",
+                self.host
+            )));
+        }
+        let messages: Vec<ChatMessage> = edit::messages(instruction, selection)
+            .into_iter()
+            .map(|(role, content)| ChatMessage {
+                role: role.into(),
+                content,
+            })
+            .collect();
+        let answer = self.chat(&messages, edit::num_predict(instruction, selection))?;
+        let text = edit::tidy_output(&answer, selection);
+        if text.trim().is_empty() {
+            return Err(VoxError::Processing("the LLM returned nothing".into()));
+        }
+        Ok(text)
     }
 
     fn chat(&self, messages: &[ChatMessage], num_predict: usize) -> Result<String> {

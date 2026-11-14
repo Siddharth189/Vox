@@ -3,11 +3,11 @@ use std::time::Instant;
 
 use crate::config::Settings;
 use crate::context::{self, AppDetector};
-use crate::error::Result;
+use crate::error::{Result, VoxError};
 use crate::inject::{AutoPasteInjector, ClipboardInjector, TextInjector};
 use crate::model::{
-    elapsed_ms, AppContext, AudioChunk, EnrichedRequest, InjectionResult, LatencyMetrics, Mode,
-    ProcessedText, Transcript,
+    elapsed_ms, AppContext, AudioChunk, EnrichedRequest, Format, InjectionResult, LatencyMetrics,
+    Mode, ProcessedText, Transcript,
 };
 use crate::privacy::PrivacyPolicy;
 use crate::process::{join_segments, CleanupProcessor, Segment, TextProcessor, VoiceCommands};
@@ -67,6 +67,29 @@ pub struct PreparedReport {
     /// use. With empty `processed_text`, the whole dictation; otherwise a
     /// part of a streamed one.
     pub rejected: Option<String>,
+}
+
+/// The speech of one dictation: a finished recording, or a transcription
+/// that ran while it was recorded.
+pub enum Speech {
+    Clip(AudioChunk),
+    Streamed(StreamingSession),
+}
+
+/// One edit by voice, done.
+#[derive(Debug, Clone)]
+pub struct EditReport {
+    pub ctx: AppContext,
+    /// What the user said to do.
+    pub instruction: String,
+    /// Length of the text that was selected (0: nothing was, and the
+    /// result was inserted at the cursor). The text itself isn't kept.
+    pub selection_chars: usize,
+    /// What replaced the selection.
+    pub text: String,
+    pub injection: InjectionResult,
+    pub latency: LatencyMetrics,
+    pub confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +308,95 @@ impl Pipeline {
         }
     }
 
+    /// Edit by voice: the selection in the focused app is rewritten as the
+    /// spoken instruction says. The selection is copied first, while that
+    /// app still has focus; then the instruction is transcribed, the LLM
+    /// rewrites, and the result is pasted over the selection. Whatever
+    /// fails, the user's clipboard is given back and nothing is pasted.
+    pub fn edit(&self, speech: Speech, ctx: AppContext) -> Result<EditReport> {
+        let privacy_start = Instant::now();
+        self.privacy.ensure_allowed(&ctx)?;
+        // Ctrl+C interrupts the running program in a terminal.
+        if ctx.profile.format == Format::Shell {
+            return Err(VoxError::Injection(
+                "edit by voice is off in terminals".into(),
+            ));
+        }
+        let privacy_ms = elapsed_ms(privacy_start.elapsed());
+
+        let copy_start = Instant::now();
+        let target = self.injector.begin_edit(&ctx)?;
+        let copy_ms = elapsed_ms(copy_start.elapsed());
+
+        let transcribe_start = Instant::now();
+        let heard = match self.transcribe_speech(speech, &ctx) {
+            Ok(t) => t,
+            Err(e) => {
+                self.injector.abort_edit(target);
+                return Err(e);
+            }
+        };
+        let transcribe_ms = elapsed_ms(transcribe_start.elapsed());
+        let instruction = heard.transcript.text.trim().to_string();
+        if stt::is_non_speech(&instruction) {
+            self.injector.abort_edit(target);
+            return Err(VoxError::Transcription(
+                "didn't catch the instruction".into(),
+            ));
+        }
+
+        let process_start = Instant::now();
+        let text = match self.processor.edit(&instruction, &target.selection, &ctx) {
+            Ok(text) => text,
+            Err(e) => {
+                self.injector.abort_edit(target);
+                return Err(e);
+            }
+        };
+        let process_ms = elapsed_ms(process_start.elapsed());
+
+        let selection_chars = target.selection.chars().count();
+        let inject_start = Instant::now();
+        let injection = self.injector.finish_edit(target, &text, &ctx)?;
+        let inject_ms = copy_ms + elapsed_ms(inject_start.elapsed());
+
+        let mut latency = LatencyMetrics::prepare_only(privacy_ms, transcribe_ms, process_ms)
+            .with_audio(heard.audio_ms)
+            .with_injection(inject_ms);
+        latency.streamed_segments = heard.streamed_segments;
+        latency.stt_work_ms = heard.stt_work_ms;
+        Ok(EditReport {
+            ctx,
+            instruction,
+            selection_chars,
+            text,
+            injection,
+            latency,
+            confidence: heard.transcript.confidence,
+        })
+    }
+
+    /// Transcribes `speech` as is: no voice commands, no cleanup.
+    fn transcribe_speech(&self, speech: Speech, ctx: &AppContext) -> Result<Heard> {
+        match speech {
+            Speech::Clip(audio) => Ok(Heard {
+                transcript: self.transcriber.transcribe(&audio, ctx)?,
+                audio_ms: (audio.duration_secs() * 1000.0).round() as u64,
+                streamed_segments: 0,
+                stt_work_ms: 0,
+            }),
+            Speech::Streamed(session) => {
+                let outcome = session.finish()?;
+                Ok(Heard {
+                    transcript: outcome.transcript,
+                    audio_ms: outcome.audio_ms,
+                    streamed_segments: outcome.segments_while_speaking,
+                    stt_work_ms: outcome.work_ms,
+                })
+            }
+        }
+    }
+
     pub fn inject_processed_text(
         &self,
         processed_text: &str,
@@ -298,6 +410,14 @@ impl Pipeline {
         }
         self.injector.inject(processed_text, ctx)
     }
+}
+
+/// A transcription and what it took.
+struct Heard {
+    transcript: Transcript,
+    audio_ms: u64,
+    streamed_segments: u32,
+    stt_work_ms: u64,
 }
 
 #[cfg(test)]
@@ -483,5 +603,169 @@ mod tests {
             report.injection.injected_chars,
             "raw dictation text".chars().count()
         );
+    }
+
+    /// Records what an edit did to the clipboard and the app.
+    struct SpyInjector {
+        selection: &'static str,
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl SpyInjector {
+        fn new(selection: &'static str) -> (Self, Arc<std::sync::Mutex<Vec<String>>>) {
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    selection,
+                    events: events.clone(),
+                },
+                events,
+            )
+        }
+
+        fn log(&self, event: String) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    impl TextInjector for SpyInjector {
+        fn inject(&self, text: &str, _: &AppContext) -> Result<InjectionResult> {
+            self.log(format!("paste {text}"));
+            Ok(InjectionResult {
+                injected_chars: text.chars().count(),
+                strategy: "spy".into(),
+            })
+        }
+        fn name(&self) -> &'static str {
+            "spy"
+        }
+        fn begin_edit(&self, _: &AppContext) -> Result<crate::inject::EditTarget> {
+            self.log("copy".into());
+            Ok(crate::inject::EditTarget::detached(self.selection))
+        }
+        fn finish_edit(
+            &self,
+            _: crate::inject::EditTarget,
+            text: &str,
+            ctx: &AppContext,
+        ) -> Result<InjectionResult> {
+            self.inject(text, ctx)
+        }
+        fn abort_edit(&self, _: crate::inject::EditTarget) {
+            self.log("restore".into());
+        }
+    }
+
+    fn ctx_with_format(format: Format) -> AppContext {
+        AppContext {
+            profile: AppProfile {
+                format,
+                privacy: Privacy::LocalOnly,
+            },
+            ..ctx_with_privacy(Privacy::LocalOnly)
+        }
+    }
+
+    fn edit_pipeline(
+        transcriber: Box<dyn Transcriber>,
+        processor: FakeTextProcessor,
+        injector: SpyInjector,
+    ) -> Pipeline {
+        Pipeline::new(
+            Box::new(StubAppDetector::new(ctx_with_privacy(Privacy::LocalOnly))),
+            transcriber,
+            Box::new(processor),
+            Box::new(injector),
+        )
+    }
+
+    #[test]
+    fn edit_copies_first_then_pastes_the_rewrite_over_the_selection() {
+        let (spy, events) = SpyInjector::new("send me the report now");
+        let pipeline = edit_pipeline(
+            Box::new(FakeTranscriber::new(" make it polite ")),
+            FakeTextProcessor::passthrough(),
+            spy,
+        );
+        let report = pipeline
+            .edit(Speech::Clip(audio()), ctx_with_format(Format::CleanProse))
+            .unwrap();
+        assert_eq!(report.instruction, "make it polite");
+        assert_eq!(report.selection_chars, "send me the report now".len());
+        assert_eq!(report.text, "make it polite: send me the report now");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "copy".to_string(),
+                "paste make it polite: send me the report now".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn edit_with_nothing_selected_inserts_what_was_asked_for() {
+        let (spy, _) = SpyInjector::new("");
+        let pipeline = edit_pipeline(
+            Box::new(FakeTranscriber::new("write a thank you note")),
+            FakeTextProcessor::returning("Thank you!"),
+            spy,
+        );
+        let report = pipeline
+            .edit(Speech::Clip(audio()), ctx_with_format(Format::Casual))
+            .unwrap();
+        assert_eq!(report.selection_chars, 0);
+        assert_eq!(report.text, "Thank you!");
+    }
+
+    #[test]
+    fn edit_is_refused_in_terminals_and_private_apps_before_listening() {
+        for (ctx, privacy_error) in [
+            (ctx_with_format(Format::Shell), false),
+            (ctx_with_privacy(Privacy::Disabled), true),
+        ] {
+            let counting = Arc::new(AtomicUsize::new(0));
+            let (spy, events) = SpyInjector::new("text");
+            let pipeline = edit_pipeline(
+                Box::new(CountingTranscriber(counting.clone())),
+                FakeTextProcessor::passthrough(),
+                spy,
+            );
+            let err = pipeline.edit(Speech::Clip(audio()), ctx).unwrap_err();
+            assert_eq!(
+                matches!(err, crate::error::VoxError::PrivacyBlocked(_)),
+                privacy_error
+            );
+            assert_eq!(counting.load(Ordering::SeqCst), 0);
+            assert!(
+                events.lock().unwrap().is_empty(),
+                "nothing copied or pasted"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_edit_gives_the_clipboard_back_and_pastes_nothing() {
+        // The LLM fails, or the instruction was silence.
+        let cases: [(Box<dyn Transcriber>, FakeTextProcessor); 2] = [
+            (
+                Box::new(FakeTranscriber::new("make it shorter")),
+                FakeTextProcessor::failing(),
+            ),
+            (
+                Box::new(FakeTranscriber::new("[BLANK_AUDIO]")),
+                FakeTextProcessor::passthrough(),
+            ),
+        ];
+        for (transcriber, processor) in cases {
+            let (spy, events) = SpyInjector::new("some text");
+            let pipeline = edit_pipeline(transcriber, processor, spy);
+            assert!(pipeline
+                .edit(Speech::Clip(audio()), ctx_with_format(Format::CleanProse))
+                .is_err());
+            assert_eq!(
+                *events.lock().unwrap(),
+                vec!["copy".to_string(), "restore".to_string()]
+            );
+        }
     }
 }

@@ -93,7 +93,7 @@ Usage:
   vox setup [--model NAME]         download the speech model and check everything
   vox doctor [--json]              readiness report
   vox download-model [NAME]        fetch a Whisper model (default: {}); `--list` shows choices
-  vox transcribe FILE.wav [--model PATH] [--lang LANG] [--threads N] [--repeat N] [--stream]
+  vox transcribe FILE.wav [--model PATH] [--lang LANG] [--threads N] [--repeat N] [--stream [--live]]
   vox listen [--secs N] [--model PATH] [--device NAME] [--dry-run]
   vox devices                      list microphones (* = selected)
   vox demo [--app APP_ID] [--dry-run] [--input LANG] [--lang LANG] [--llm MODEL] \"text\"
@@ -395,6 +395,8 @@ fn cmd_transcribe(args: &[String]) -> Result<()> {
 /// transcriber in real time, as the microphone would, then reports how long
 /// "stop" had to wait for the text. That wait is what streaming shortens;
 /// compare it with the plain `vox transcribe` time for the same file.
+/// `--live` also prints the live text as it changes (what the live text
+/// window shows), to check that previews keep up and don't slow the stop.
 fn transcribe_streamed(
     transcriber: std::sync::Arc<LocalWhisper>,
     files: &[String],
@@ -416,9 +418,36 @@ fn transcribe_streamed(
         let tap = LiveTap::new(wav.sample_rate);
         let t = std::sync::Arc::clone(&transcriber);
         let ctx = AppContext::unknown();
-        let session = StreamingSession::start(tap.clone(), move |audio, hint| {
-            t.transcribe_segment(audio, &ctx, hint)
+        let live = args.iter().any(|a| a == "--live").then(|| {
+            let t = std::sync::Arc::clone(&transcriber);
+            let ctx = AppContext::unknown();
+            let started = Instant::now();
+            vox::stt::Live {
+                preview: Box::new(move |audio, hint, stop| t.preview(audio, &ctx, hint, stop)),
+                sink: Box::new(move |text| {
+                    println!(
+                        "  live {:>6.2}s: {}{}{}",
+                        started.elapsed().as_secs_f64(),
+                        text.settled,
+                        if text.settled.is_empty() || text.pending.is_empty() {
+                            ""
+                        } else {
+                            " "
+                        },
+                        if text.pending.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[{}]", text.pending)
+                        }
+                    );
+                }),
+            }
         });
+        let session = StreamingSession::start_live(
+            tap.clone(),
+            move |audio, hint| t.transcribe_segment(audio, &ctx, hint),
+            live,
+        );
         let per_feed = (wav.sample_rate as u128 * FEED.as_millis() / 1000) as usize;
         let started = Instant::now();
         for (i, chunk) in wav.samples.chunks(per_feed.max(1)).enumerate() {

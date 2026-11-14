@@ -6,8 +6,30 @@ All notable changes to Vox are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Edit by voice.** Select text anywhere, press `Ctrl+Shift+.`, and say how to change it: "make
+  it shorter", "more polite", "fix the grammar", "isko English mein kar do". Your local LLM
+  rewrites the selection and Vox pastes the result over it. With nothing selected, say what to
+  write and it's inserted at the cursor. The clipboard is restored afterwards, and nothing
+  changes if anything fails. It needs LLM cleanup and auto-paste, and is off in terminals (where
+  Ctrl+C would stop the running program). The shortcut and its tap/hold behavior are in
+  settings.
+- **Live text.** While you speak, a small bubble above the taskbar shows a level meter and your
+  words as they come (Windows; on macOS and Linux the words show in the tray's title). Settled
+  sentences are bright, the part still being heard is dimmer. Previews never change the pasted
+  text and are dropped as soon as you stop. Turn it off with **Live text**
+  in settings. `vox transcribe FILE.wav --stream --live` prints the same updates.
+
 ### Fixed
 
+- **A dictation is no longer lost to "Invalid UTF-8".** When decoding stopped partway through a
+  multi-byte character (Hindi in Devanagari, for one), reading Whisper's text failed and the
+  whole dictation was dropped. Now only the broken character is.
+- **Settings saved with a byte-order mark load again.** A `settings.yaml` written by PowerShell 5
+  (`Set-Content -Encoding utf8`) or older Notepad starts with a BOM, which made Vox silently fall
+  back to default settings, hotkey included. The BOM is now ignored, and a settings file that
+  can't be read is reported in `tray.log`.
 - **A whole sentence no longer comes out as one word or a number.** On audio Whisper found hard,
   it sometimes pasted something from its prompt instead: "1.146.0" from a "Release Notes:
   1.146.0" tab title, or "English", for 7-12 s of speech. When the output is far too short for
