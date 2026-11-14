@@ -31,6 +31,12 @@ All notable changes to Vox are listed here. The format follows
 
 ### Fixed
 
+- **Upgrading no longer switches your speech model back to the default.** Re-running an
+  installer without naming a model used to reset Vox to `base-q5_1`, quietly undoing a switch
+  to `small-q5_1`. `vox download-model` with no name now keeps the model you have, and only
+  downloads the default when none is set up.
+- **Settings show the new version right after an upgrade.** The browser could keep showing the
+  old settings page until a hard refresh (Ctrl+F5); the page is now always rechecked.
 - **A dictation is no longer lost to "Invalid UTF-8".** When decoding stopped partway through a
   multi-byte character (Hindi in Devanagari, for one), reading Whisper's text failed and the
   whole dictation was dropped. Now only the broken character is.

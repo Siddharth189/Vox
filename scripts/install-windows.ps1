@@ -103,7 +103,7 @@ Run "create Vox.lnk" {
 }
 
 # 6. Speech model
-Step "Downloading the speech model (one time)"
+Step "Checking the speech model (downloads once, keeps the one you chose)"
 Run "vox download-model $Model" {
     if ($Model) { & $VoxExe download-model $Model } else { & $VoxExe download-model }
     if ($LASTEXITCODE -ne 0) { throw "model download failed" }
