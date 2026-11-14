@@ -51,6 +51,7 @@ fn real_main() -> Result<()> {
             vox::tray::run(model)
         }
         "inject-test" => cmd_inject_test(&args),
+        "edit-test" => cmd_edit_test(&args),
         "download-model" => cmd_download_model(&args),
         "setup" => cmd_setup(&args),
         "autostart" => cmd_autostart(&args),
@@ -98,6 +99,7 @@ Usage:
   vox devices                      list microphones (* = selected)
   vox demo [--app APP_ID] [--dry-run] [--input LANG] [--lang LANG] [--llm MODEL] \"text\"
   vox inject-test [--app APP_ID] \"text\"
+  vox edit-test [--selection TEXT] [--llm MODEL] \"instruction\"   edit by voice's LLM step, printed
   vox autostart [on|off|status]    launch the tray at login
   vox stats [--json|--reset]       words dictated and typing time saved
   vox check                        quick LLM server (optional cleanup) check",
@@ -518,6 +520,7 @@ fn flag_takes_value(flag: &str) -> bool {
             | "--threads"
             | "--repeat"
             | "--device"
+            | "--selection"
     )
 }
 
@@ -626,6 +629,30 @@ fn cmd_inject_test(args: &[String]) -> Result<()> {
     let result = AutoPasteInjector.inject(&text, &ctx)?;
     println!("{} - {} chars", result.strategy, result.injected_chars);
     vox::inject::wait_for_clipboard_restore(&result.strategy);
+    Ok(())
+}
+
+/// `vox edit-test`: edit by voice's LLM step on its own (no mic, no
+/// clipboard, nothing pasted), for checking a model or the prompt.
+fn cmd_edit_test(args: &[String]) -> Result<()> {
+    let instruction = positional_text(args)
+        .ok_or_else(|| VoxError::Other("edit-test requires an instruction".into()))?;
+    let selection = flag_value(args, "--selection").unwrap_or_default();
+    let mut settings = Settings::load();
+    if let Some(model) = flag_value(args, "--llm") {
+        settings.llm_model = model;
+    }
+    let processor = CleanupProcessor::from_settings(&settings)?;
+    let start = Instant::now();
+    let text = processor.edit(&instruction, &selection, &AppContext::unknown())?;
+    println!(
+        "model: {} ({} ms)",
+        settings.llm_model,
+        start.elapsed().as_millis()
+    );
+    println!("selected: {selection}");
+    println!("said:     {instruction}");
+    println!("result:   {text}");
     Ok(())
 }
 

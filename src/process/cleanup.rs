@@ -82,7 +82,11 @@ impl Availability {
 }
 
 pub struct CleanupProcessor {
+    /// The configured LLM server. Built even with cleanup off: edit by
+    /// voice uses it on its own.
     llm: Option<(OllamaProcessor, Arc<Availability>)>,
+    /// `llm_cleanup`: whether dictations go through the LLM.
+    cleanup: bool,
     local: LocalCleanup,
 }
 
@@ -92,16 +96,16 @@ impl CleanupProcessor {
             settings.custom_dictionary.clone(),
             settings.custom_aliases.clone(),
         );
-        let llm = if settings.llm_cleanup {
-            let processor = OllamaProcessor::from_settings(settings)?;
-            let availability =
-                Availability::new(processor.provider(), processor.host(), processor.model());
-            availability.refresh();
-            Some((processor, availability))
-        } else {
-            None
-        };
-        Ok(Self { llm, local })
+        let processor = OllamaProcessor::from_settings(settings)?;
+        let availability =
+            Availability::new(processor.provider(), processor.host(), processor.model());
+        // One background probe, so the first edit knows whether to listen.
+        availability.refresh();
+        Ok(Self {
+            llm: Some((processor, availability)),
+            cleanup: settings.llm_cleanup,
+            local,
+        })
     }
 
     /// Synchronously re-checks the LLM server (for one-shot CLI commands).
@@ -113,13 +117,13 @@ impl CleanupProcessor {
 
     /// Whether dictations will currently go through the LLM.
     pub fn llm_active(&self) -> bool {
-        self.llm.as_ref().is_some_and(|(_, a)| a.is_available())
+        self.cleanup && self.llm.as_ref().is_some_and(|(_, a)| a.is_available())
     }
 }
 
 impl TextProcessor for CleanupProcessor {
     fn process(&self, req: &EnrichedRequest) -> Result<ProcessedText> {
-        if let Some((llm, availability)) = &self.llm {
+        if let Some((llm, availability)) = self.llm.as_ref().filter(|_| self.cleanup) {
             if availability.is_available() {
                 match llm.process(req) {
                     Ok(p) => return Ok(p),
@@ -140,7 +144,7 @@ impl TextProcessor for CleanupProcessor {
     fn edit(&self, instruction: &str, selection: &str, _ctx: &AppContext) -> Result<String> {
         let Some((llm, availability)) = &self.llm else {
             return Err(VoxError::Processing(
-                "edit by voice needs LLM cleanup turned on in settings".into(),
+                "edit by voice needs an LLM server set up in settings".into(),
             ));
         };
         match llm.edit(instruction, selection) {
@@ -164,6 +168,13 @@ impl TextProcessor for CleanupProcessor {
     }
 
     fn llm_status(&self) -> Option<bool> {
+        if !self.cleanup {
+            return None;
+        }
+        self.llm.as_ref().map(|(_, a)| a.is_available())
+    }
+
+    fn edit_status(&self) -> Option<bool> {
         self.llm.as_ref().map(|(_, a)| a.is_available())
     }
 }
@@ -190,6 +201,21 @@ mod tests {
         let out = p.process(&req("um, hello world.")).unwrap();
         assert_eq!(out.text, "Hello world.");
         assert!(out.model_text.is_none());
+    }
+
+    #[test]
+    fn cleanup_off_still_leaves_the_llm_for_edits() {
+        let mut s = Settings::with_defaults();
+        s.llm_cleanup = false;
+        let p = CleanupProcessor::from_settings(&s).unwrap();
+        if let Some((_, a)) = &p.llm {
+            a.set(true);
+        }
+        // Dictations skip it (and say so: no LLM in use)...
+        assert!(!p.llm_active());
+        assert_eq!(p.llm_status(), None);
+        // ...while edit by voice can use it.
+        assert_eq!(p.edit_status(), Some(true));
     }
 
     #[test]

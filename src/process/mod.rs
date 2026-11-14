@@ -32,13 +32,19 @@ pub trait TextProcessor: Send + Sync {
         None
     }
 
+    /// Like `llm_status`, for edit by voice, which uses the LLM whether or
+    /// not dictations do. `None` = no LLM server set up.
+    fn edit_status(&self) -> Option<bool> {
+        None
+    }
+
     /// Edit by voice: `selection` rewritten as the spoken `instruction`
     /// says (or, with nothing selected, the text it asks for). Only an LLM
     /// can do this; there is no rule-based fallback.
     fn edit(&self, instruction: &str, selection: &str, ctx: &AppContext) -> Result<String> {
         let _ = (instruction, selection, ctx);
         Err(VoxError::Processing(
-            "edit by voice needs LLM cleanup turned on in settings".into(),
+            "edit by voice needs an LLM server set up in settings".into(),
         ))
     }
 }

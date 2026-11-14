@@ -99,7 +99,7 @@ paste at the cursor.
 ## Edit by voice
 
 A second hotkey (`edit_hotkey`, default `Ctrl+Shift+.`) records an instruction instead of
-dictation. Before the mic opens the tray refuses what can't work: auto-paste or LLM cleanup off,
+dictation. Before the mic opens the tray refuses what can't work: auto-paste off, no LLM server,
 a terminal profile (Ctrl+C would interrupt the program), or an LLM server the probe says is down.
 On stop, `Pipeline::edit` runs, in this order:
 
@@ -107,7 +107,8 @@ On stop, `Pipeline::edit` runs, in this order:
    it, and Ctrl/Cmd+C sent. If the marker is replaced within 600 ms that's the selection;
    otherwise nothing was selected. This happens first, while the target app still has focus.
 2. The instruction is transcribed as is (no voice commands or cleanup).
-3. `TextProcessor::edit` asks the LLM (`process/edit.rs`: rules, four examples, the selection
+3. `TextProcessor::edit` asks the LLM (built even when `llm_cleanup` is off, which only decides
+   whether dictations use it) (`process/edit.rs`: rules, four examples, the selection
    wrapped as data so instructions inside it aren't followed). The selection's surrounding
    whitespace is kept so the result fits back in. There is no rule-based fallback.
 4. `finish_edit` pastes the result over the selection and restores the original clipboard.

@@ -254,6 +254,12 @@ impl Pipeline {
         self.processor.llm_status()
     }
 
+    /// Whether edit by voice can reach its LLM right now: `None` when no
+    /// server is set up, `Some(false)` when it isn't answering.
+    pub fn edit_llm_status(&self) -> Option<bool> {
+        self.processor.edit_status()
+    }
+
     /// Cleans up the spoken parts of the transcript and splices in what the
     /// voice commands and snippets insert verbatim. A processor failure
     /// falls back to the raw words rather than losing the dictation.

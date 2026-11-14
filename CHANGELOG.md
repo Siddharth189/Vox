@@ -12,7 +12,8 @@ All notable changes to Vox are listed here. The format follows
   it shorter", "more polite", "fix the grammar", "isko English mein kar do". Your local LLM
   rewrites the selection and Vox pastes the result over it. With nothing selected, say what to
   write and it's inserted at the cursor. The clipboard is restored afterwards, and nothing
-  changes if anything fails. It needs LLM cleanup and auto-paste, and is off in terminals (where
+  changes if anything fails. It needs a local LLM server and auto-paste (LLM cleanup of
+  dictations can stay off), and is off in terminals (where
   Ctrl+C would stop the running program). The shortcut and its tap/hold behavior are in
   settings.
 - **Live text.** While you speak, a small bubble above the taskbar shows a level meter and your

@@ -213,8 +213,8 @@ it while you speak). The selection is replaced with the result. `Ctrl+Z` in the 
 | "He don't know where the files is." | "fix the grammar" | "He doesn't know where the files are." |
 | *(nothing)* | "write a short thank-you note to Priya" | a note, typed at the cursor |
 
-It uses your [local LLM](#optional-polish-with-a-local-llm), so it needs LLM cleanup and
-auto-paste on, and a model running. It's off in terminals, where Ctrl+C would stop the program.
+It uses your [local LLM](#optional-polish-with-a-local-llm), so it needs a model running and
+auto-paste on. LLM cleanup of dictations can stay off: edits use the server either way. It's off in terminals, where Ctrl+C would stop the program.
 In code editors that copy the whole line when nothing is selected (VS Code, JetBrains), select
 what you want changed first.
 
@@ -246,6 +246,8 @@ vox transcribe FILE.wav       transcribe a recording (benchmarks, bug reports)
                 [--live]      ...and the live text as it changes
 vox demo [--dry-run] "text"   run text through cleanup, voice commands, and snippets
 vox inject-test "text"        test auto-paste on its own
+vox edit-test "instruction" --selection "text"
+                              edit by voice's LLM step alone; prints the result
 vox autostart on|off|status   launch the tray at login
 vox check                     send one test request to the configured LLM server
 ```

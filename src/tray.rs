@@ -944,8 +944,8 @@ fn edit_unavailable(
 ) -> Option<&'static str> {
     if !settings.auto_paste {
         Some("Edit by voice needs auto-paste - turn it on in Settings")
-    } else if !settings.llm_cleanup || llm.is_none() {
-        Some("Edit by voice needs LLM cleanup - turn it on in Settings")
+    } else if llm.is_none() {
+        Some("Edit by voice needs an LLM server - set one up in Settings")
     } else if ctx.is_some_and(|c| c.profile.format == Format::Shell) {
         Some("Edit by voice is off in terminals")
     } else if llm == Some(false) {
@@ -1013,7 +1013,7 @@ fn start_recording(
         }
     }
     if kind == Kind::Edit {
-        if let Some(why) = edit_unavailable(settings, start_ctx.as_ref(), p.llm_status()) {
+        if let Some(why) = edit_unavailable(settings, start_ctx.as_ref(), p.edit_llm_status()) {
             if settings.sound_cues {
                 cue::play(Cue::Cancel);
             }
@@ -1434,11 +1434,16 @@ mod llm_status_tests {
             .unwrap()
             .contains("auto-paste"));
 
-        let mut no_llm = ok.clone();
-        no_llm.llm_cleanup = false;
-        assert!(edit_unavailable(&no_llm, Some(&prose), None)
+        // LLM cleanup off is fine: edits use the server on their own.
+        let mut no_cleanup = ok.clone();
+        no_cleanup.llm_cleanup = false;
+        assert_eq!(
+            edit_unavailable(&no_cleanup, Some(&prose), Some(true)),
+            None
+        );
+        assert!(edit_unavailable(&ok, Some(&prose), None)
             .unwrap()
-            .contains("LLM cleanup"));
+            .contains("LLM server"));
 
         assert!(edit_unavailable(&ok, Some(&ctx(Format::Shell)), Some(true))
             .unwrap()
