@@ -6,12 +6,13 @@ Local web UI served by the tray process at [http://127.0.0.1:8722](http://127.0.
 
 - **Your dictation** - lifetime words, time saved, speaking pace, and streak
   (`GET /api/stats`).
-- **Language** - "Languages you speak" chips (plus the Hindi/English mixing
-  toggle) and "Write it as" choices (`languages.js`). They write the same
-  `input_language` / `output_language` strings as before. `GET /api/models`
-  reports `llm_ready` (LLM cleanup on and the server answering with the model,
-  the same probe dictation uses), so choices that need translation are marked
-  and the page warns when they can't work yet.
+- **Language** - Spoken language and Output language dropdowns (`languages.js`),
+  including "English + Hindi", Hinglish, and an "Other" box. They write the same
+  `input_language` / `output_language` strings as before; a saved value that
+  isn't in the list is shown as its own entry. `GET /api/models` reports
+  `llm_ready` (LLM cleanup on and the server answering with the model, the same
+  probe dictation uses), so output languages that need translation are marked
+  and a note explains what happens until the local AI runs.
 - **General** - Whisper model, LLM server (Ollama or
   OpenAI-compatible, plus URL) and model, voice commands toggle, auto-paste,
   optional system-message override with live prompt preview, hotkey editor.

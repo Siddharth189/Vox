@@ -164,37 +164,12 @@
     .chip button:hover { color: var(--danger); }
 
     /* Language */
-    .lang-block { padding: 0.75rem 0; }
-    .lang-block + .lang-block { border-top: 1px solid var(--border); }
-    .lang-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.7rem; }
-    .lang-chip {
-      background: var(--chip-bg); border: 1px solid var(--border); border-radius: 999px;
-      color: var(--text); font: inherit; font-size: 0.85rem; padding: 0.3rem 0.8rem; cursor: pointer;
+    .lang-other { margin-top: 0.5rem; }
+    .lang-other[hidden], .lang-note[hidden] { display: none; }
+    .lang-note {
+      margin-top: 0.4rem; padding: 0.6rem 0.8rem; border-radius: 10px;
+      border: 1px solid var(--danger); background: var(--chip-bg); font-size: 0.85rem;
     }
-    .lang-chip:hover { border-color: var(--accent); }
-    .lang-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-    .lang-chip:focus-visible, .lang-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .lang-other { margin-top: 0.6rem; max-width: 340px; }
-    .lang-toggle { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.7rem; font-size: 0.9rem; cursor: pointer; }
-    .lang-toggle[hidden] { display: none; }
-    .lang-note { color: var(--danger); font-size: 0.82rem; margin-top: 0.4rem; }
-    .lang-note:empty { display: none; }
-    .lang-choices { display: grid; gap: 0.45rem; margin-top: 0.7rem; }
-    .lang-choice {
-      display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0.75rem;
-      border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
-    }
-    .lang-choice.on { border-color: var(--accent); background: var(--chip-bg); }
-    .lang-choice input { margin: 0; }
-    .lang-choice-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-    .lang-choice-label { font-weight: 600; font-size: 0.92rem; }
-    .lang-choice-desc { color: var(--muted); font-size: 0.8rem; }
-    .lang-badge { font-size: 0.72rem; font-weight: 600; border-radius: 999px; padding: 0.15rem 0.55rem; white-space: nowrap; }
-    .lang-badge.ready { background: var(--chip-bg); color: var(--muted); }
-    .lang-badge.needs { border: 1px solid var(--danger); color: var(--danger); }
-    .lang-summary { margin-top: 0.4rem; padding: 0.65rem 0.8rem; border-radius: 10px; background: var(--chip-bg); font-size: 0.88rem; }
-    .lang-summary.warn { border: 1px solid var(--danger); }
-    .muted { color: var(--muted); }
 
     /* Dictionary table */
     .dict-table { width: 100%; }
@@ -279,26 +254,27 @@
 
     <section class="section" id="section-language">
       <div class="section-label">Language</div>
-      <div class="lang-block">
-        <div class="field-title">Languages you speak</div>
-        <div class="field-desc">Pick every language you dictate in. Vox only listens for these, so it never mistakes your speech for another language. Pick none to have Vox detect it.</div>
-        <div id="spoken_chips" class="lang-chips" role="group" aria-label="Languages you speak"></div>
-        <input id="spoken_other" type="text" class="lang-other" placeholder="Others, e.g. Gujarati, Urdu" aria-label="Other languages you speak" />
-        <label class="lang-toggle" id="mixed_row" hidden>
-          <input id="spoken_mixed" type="checkbox" />
-          <span>I mix Hindi and English in the same sentence <span class="muted">(Hinglish)</span></span>
-        </label>
-        <div class="lang-note" id="spoken_note" role="status"></div>
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Spoken language</div>
+          <div class="field-desc">Language you dictate in. Auto-detect works for most cases; speak two? Pick both so Vox never mistakes your speech for another language.</div>
+        </div>
+        <div class="field-control">
+          <select id="input_language" aria-label="Spoken language"></select>
+          <input id="input_language_other" type="text" class="lang-other" placeholder="e.g. English, Gujarati" aria-label="Languages you speak" hidden />
+        </div>
       </div>
-      <div class="lang-block">
-        <div class="field-title">Write it as</div>
-        <div class="field-desc">How the text comes out, whatever you spoke.</div>
-        <div id="output_choices" class="lang-choices" role="radiogroup" aria-label="Write it as"></div>
-        <input id="output_other" type="text" class="lang-other" placeholder="e.g. Spanish, French, Japanese" aria-label="Language to write in" hidden />
+      <div class="field-row">
+        <div class="field-info">
+          <div class="field-title">Output language</div>
+          <div class="field-desc">Final writing language.</div>
+        </div>
+        <div class="field-control">
+          <select id="output_language" aria-label="Output language"></select>
+          <input id="output_language_other" type="text" class="lang-other" placeholder="e.g. Swahili" aria-label="Language to write in" hidden />
+        </div>
       </div>
-      <div class="lang-summary" id="lang_summary" role="status" aria-live="polite"></div>
-      <input id="input_language" type="hidden" />
-      <input id="output_language" type="hidden" />
+      <div class="lang-note" id="lang_note" role="status" aria-live="polite" hidden></div>
     </section>
 
     <section class="section" id="section-models">

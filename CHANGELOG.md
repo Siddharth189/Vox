@@ -8,13 +8,13 @@ All notable changes to Vox are listed here. The format follows
 
 ### Changed
 
-- **Language settings you can actually use.** "Languages you speak" is a set of tap-to-select
-  chips plus "I mix Hindi and English in the same sentence", and "Write it as" offers As I said
-  it, English, Hindi, Hinglish in Latin letters, or another language. Each choice says whether it
-  works right now. If translating needs the local AI and it isn't running, the page says so
-  before you dictate, instead of Vox quietly inserting untranslated text. Replaces two free-text
-  boxes whose dropdown only ever showed the value already typed. Existing settings carry over
-  unchanged.
+- **Language settings are dropdowns again, with every option.** Spoken language lists
+  Auto-detect, single languages, "English + Hindi", "Hinglish (Hindi & English mixed)" and Other;
+  Output language lists Same as spoken, English, Hindi (देवनागरी), Hinglish in Latin letters and
+  more. Output languages that need the local AI to translate say so in the list ("needs local
+  AI"), with a note explaining what happens until it runs, instead of Vox quietly inserting
+  untranslated text. Replaces two free-text boxes whose list only ever showed the value already
+  typed. Existing settings carry over unchanged.
 
 ### Fixed
 
