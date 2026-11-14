@@ -223,6 +223,7 @@ mod tests {
             corrected_text: None,
             stt_confidence: None,
             rejected: None,
+            edit: false,
         }
     }
 

@@ -44,6 +44,10 @@ pub struct DictationRecord {
     /// for a dictation that was inserted only in part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected: Option<String>,
+    /// Edit by voice: `raw_text` is the spoken instruction and `final_text`
+    /// what replaced the selection (the selection itself isn't kept).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

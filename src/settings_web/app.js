@@ -40,9 +40,13 @@ function fillSelect(el, values, current) {
   if (current) el.value = current;
 }
 
-// Draft of the hotkey being edited; `key` is a KeyboardEvent.code name
-// ("Period", "KeyD", "Space"), which is exactly what the backend parses.
-const hotkeyDraft = { modifiers: ["control"], key: "Period" };
+// Drafts of the hotkeys being edited, by id prefix: `key` is a
+// KeyboardEvent.code name ("Period", "KeyD", "Space"), which is exactly
+// what the backend parses.
+const hotkeyDrafts = {
+  hotkey: { modifiers: ["control"], key: "Period" },
+  edit_hotkey: { modifiers: ["control", "shift"], key: "Period" },
+};
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const IS_WIN = /Win/.test(navigator.platform);
@@ -60,13 +64,20 @@ function hotkeyLabel(mods, key) {
   return parts.join(" + ");
 }
 
-function renderHotkey() {
-  document.getElementById("hotkey_capture").textContent = hotkeyLabel(hotkeyDraft.modifiers, hotkeyDraft.key);
+function renderHotkey(prefix) {
+  const draft = hotkeyDrafts[prefix];
+  document.getElementById(`${prefix}_capture`).textContent = hotkeyLabel(draft.modifiers, draft.key);
 }
 
-function setupHotkeyCapture() {
-  const btn = document.getElementById("hotkey_capture");
-  const hint = document.getElementById("hotkey_hint");
+function sameShortcut(a, b) {
+  const mods = (d) => [...d.modifiers].sort().join("+");
+  return a.key === b.key && mods(a) === mods(b);
+}
+
+function setupHotkeyCapture(prefix) {
+  const btn = document.getElementById(`${prefix}_capture`);
+  const hint = document.getElementById(`${prefix}_hint`);
+  const draft = hotkeyDrafts[prefix];
   const defaultHint = hint.textContent;
   let listening = false;
 
@@ -74,7 +85,7 @@ function setupHotkeyCapture() {
     listening = false;
     btn.classList.remove("recording");
     window.removeEventListener("keydown", onKey, true);
-    renderHotkey();
+    renderHotkey(prefix);
     hint.textContent = message || defaultHint;
   };
 
@@ -97,8 +108,13 @@ function setupHotkeyCapture() {
       hint.textContent = `Include ${IS_MAC ? "Ctrl, Option, or Cmd" : "Ctrl, Alt, or Win"} so normal typing isn't captured.`;
       return;
     }
-    hotkeyDraft.modifiers = mods;
-    hotkeyDraft.key = e.code;
+    const other = prefix === "hotkey" ? hotkeyDrafts.edit_hotkey : hotkeyDrafts.hotkey;
+    if (sameShortcut({ modifiers: mods, key: e.code }, other)) {
+      hint.textContent = "That shortcut is already used for the other hotkey.";
+      return;
+    }
+    draft.modifiers = mods;
+    draft.key = e.code;
     stop("Click Save to apply.");
   };
 
@@ -126,11 +142,15 @@ function applySettingsToForm(s) {
   document.getElementById("llm_base_url").value = s.llm_base_url || "";
   document.getElementById("streaming_transcription").checked = s.streaming_transcription !== false;
   document.getElementById("system_override").value = s.system_message_override || "";
-  document.getElementById("hotkey_enabled").checked = !!(s.hotkey && s.hotkey.enabled);
-  hotkeyDraft.modifiers = (s.hotkey?.modifiers || ["control"]).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
-  hotkeyDraft.key = s.hotkey?.key || "Period";
-  document.getElementById("hotkey_mode").value = s.hotkey?.mode || "hybrid";
-  renderHotkey();
+  document.getElementById("live_text").checked = s.live_text !== false;
+  for (const [prefix, fallback] of [["hotkey", ["control"]], ["edit_hotkey", ["control", "shift"]]]) {
+    const cfg = s[prefix];
+    document.getElementById(`${prefix}_enabled`).checked = !!(cfg && cfg.enabled);
+    hotkeyDrafts[prefix].modifiers = (cfg?.modifiers || fallback).map((m) => m.toLowerCase().replace(/^ctrl$/, "control"));
+    hotkeyDrafts[prefix].key = cfg?.key || "Period";
+    document.getElementById(`${prefix}_mode`).value = cfg?.mode || "hybrid";
+    renderHotkey(prefix);
+  }
   fillSelect(document.getElementById("whisper_model"), state.models.whisper, s.whisper_model);
   fillSelect(document.getElementById("llm_model"), state.models.ollama, s.llm_model);
   fillDeviceSelect(s.input_device || "");
@@ -168,17 +188,23 @@ function readGeneralPatch() {
     llm_provider: document.getElementById("llm_provider").value,
     llm_base_url: document.getElementById("llm_base_url").value.trim() || null,
     streaming_transcription: document.getElementById("streaming_transcription").checked,
+    live_text: document.getElementById("live_text").checked,
     input_device: document.getElementById("input_device").value || null,
-    hotkey: {
-      enabled: document.getElementById("hotkey_enabled").checked,
-      modifiers: hotkeyDraft.modifiers,
-      key: hotkeyDraft.key,
-      mode: document.getElementById("hotkey_mode").value,
-    },
+    hotkey: readHotkey("hotkey"),
+    edit_hotkey: readHotkey("edit_hotkey"),
     custom_dictionary: state.settings.custom_dictionary || [],
     custom_aliases: state.settings.custom_aliases || {},
     profiles: state.settings.profiles,
     system_message_override: override ? override : null,
+  };
+}
+
+function readHotkey(prefix) {
+  return {
+    enabled: document.getElementById(`${prefix}_enabled`).checked,
+    modifiers: hotkeyDrafts[prefix].modifiers,
+    key: hotkeyDrafts[prefix].key,
+    mode: document.getElementById(`${prefix}_mode`).value,
   };
 }
 
@@ -287,7 +313,8 @@ async function boot() {
   });
   setupSystemMessageControls();
   setupHistoryToggle();
-  setupHotkeyCapture();
+  setupHotkeyCapture("hotkey");
+  setupHotkeyCapture("edit_hotkey");
 
   const [settings, models, devices] = await Promise.all([
     api("/api/settings"),

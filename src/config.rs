@@ -133,6 +133,8 @@ pub struct HotkeyConfig {
 
 pub const DEFAULT_HOTKEY_MODIFIERS: &[&str] = &["control"];
 pub const DEFAULT_HOTKEY_KEY: &str = "Period";
+/// Edit by voice: the dictation hotkey plus Shift.
+pub const DEFAULT_EDIT_HOTKEY_MODIFIERS: &[&str] = &["control", "shift"];
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
@@ -145,6 +147,72 @@ impl Default for HotkeyConfig {
             key: DEFAULT_HOTKEY_KEY.into(),
             mode: HotkeyMode::Hybrid,
         }
+    }
+}
+
+impl HotkeyConfig {
+    /// The edit-by-voice default: Ctrl+Shift+. (the dictation hotkey plus Shift).
+    pub fn default_edit() -> Self {
+        Self {
+            modifiers: DEFAULT_EDIT_HOTKEY_MODIFIERS
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Without a primary modifier (Ctrl, Alt, Cmd, Win) a global hotkey would
+    /// swallow ordinary typing, so one is required; `fallback` supplies it.
+    /// The key is stored by its canonical name ("." -> "Period") so what's
+    /// on disk is exactly what gets registered.
+    fn sanitize(&mut self, fallback: &HotkeyConfig) {
+        if !self.enabled {
+            return;
+        }
+        let has_primary = self.modifiers.iter().any(|m| {
+            matches!(
+                m.to_ascii_lowercase().as_str(),
+                "control"
+                    | "ctrl"
+                    | "alt"
+                    | "option"
+                    | "super"
+                    | "cmd"
+                    | "command"
+                    | "win"
+                    | "windows"
+                    | "meta"
+            )
+        });
+        if self.modifiers.is_empty() || !has_primary {
+            self.modifiers = fallback.modifiers.clone();
+        }
+        self.key =
+            crate::hotkey::canonical_key_name(&self.key).unwrap_or_else(|| fallback.key.clone());
+    }
+
+    /// Same key and modifiers, ignoring order, case, and aliases like "ctrl".
+    pub fn same_keys(&self, other: &HotkeyConfig) -> bool {
+        fn mods(cfg: &HotkeyConfig) -> Vec<String> {
+            let mut m: Vec<String> = cfg
+                .modifiers
+                .iter()
+                .map(|m| match m.to_ascii_lowercase().as_str() {
+                    "ctrl" => "control".to_string(),
+                    "option" => "alt".to_string(),
+                    "cmd" | "command" | "win" | "windows" | "meta" => "super".to_string(),
+                    other => other.to_string(),
+                })
+                .collect();
+            m.sort();
+            m.dedup();
+            m
+        }
+        let key = |cfg: &HotkeyConfig| {
+            crate::hotkey::canonical_key_name(&cfg.key).unwrap_or_else(|| cfg.key.clone())
+        };
+        mods(self) == mods(other) && key(self) == key(other)
     }
 }
 
@@ -225,6 +293,13 @@ pub struct Settings {
     pub system_message_override: Option<String>,
     #[serde(default)]
     pub hotkey: HotkeyConfig,
+    /// Edit by voice: select text, hold this, and say how to change it
+    /// ("make it shorter", "reply politely"); the LLM rewrites the selection.
+    #[serde(default = "HotkeyConfig::default_edit")]
+    pub edit_hotkey: HotkeyConfig,
+    /// A small window that shows the words as you speak, with a level meter.
+    #[serde(default = "default_true")]
+    pub live_text: bool,
     /// Polish text with the local Ollama model when it's running. When it
     /// isn't (or this is off), Vox uses its built-in rule-based cleanup, which
     /// adds no latency and needs no extra install.
@@ -287,6 +362,12 @@ fn default_llm_model() -> String {
 pub fn is_blocked_llm_model(model: &str) -> bool {
     let needle = ["qw", "en"].concat();
     model.to_ascii_lowercase().contains(&needle)
+}
+
+/// A UTF-8 byte-order mark, which PowerShell 5's `Set-Content -Encoding
+/// utf8` and older Notepad write and the YAML parser rejects.
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 impl Settings {
@@ -407,6 +488,8 @@ impl Settings {
             custom_aliases: HashMap::new(),
             system_message_override: None,
             hotkey: HotkeyConfig::default(),
+            edit_hotkey: HotkeyConfig::default_edit(),
+            live_text: true,
             llm_cleanup: true,
             sound_cues: true,
             streaming_transcription: true,
@@ -448,7 +531,7 @@ impl Settings {
     }
 
     pub fn from_yaml(yaml: &str) -> Result<Self> {
-        let mut settings: Settings = serde_yaml::from_str(yaml)?;
+        let mut settings: Settings = serde_yaml::from_str(strip_bom(yaml))?;
         if !settings.profiles.contains_key("default") {
             return Err(VoxError::Config(
                 "settings profiles must contain a `default` key".into(),
@@ -459,7 +542,7 @@ impl Settings {
     }
 
     pub fn from_yaml_checked(yaml: &str) -> Result<(Self, bool)> {
-        let mut settings: Settings = serde_yaml::from_str(yaml)?;
+        let mut settings: Settings = serde_yaml::from_str(strip_bom(yaml))?;
         if !settings.profiles.contains_key("default") {
             return Err(VoxError::Config(
                 "settings profiles must contain a `default` key".into(),
@@ -513,30 +596,11 @@ impl Settings {
             }
         }
 
-        if self.hotkey.enabled {
-            let has_primary = self.hotkey.modifiers.iter().any(|m| {
-                matches!(
-                    m.to_ascii_lowercase().as_str(),
-                    "control"
-                        | "ctrl"
-                        | "alt"
-                        | "option"
-                        | "super"
-                        | "cmd"
-                        | "command"
-                        | "win"
-                        | "windows"
-                        | "meta"
-                )
-            });
-            if self.hotkey.modifiers.is_empty() || !has_primary {
-                self.hotkey.modifiers = HotkeyConfig::default().modifiers;
-            }
-            // Store the canonical key name ("." -> "Period") so what's on
-            // disk is exactly what gets registered; anything unparseable
-            // falls back to the default instead of binding nothing.
-            self.hotkey.key = crate::hotkey::canonical_key_name(&self.hotkey.key)
-                .unwrap_or_else(|| DEFAULT_HOTKEY_KEY.into());
+        self.hotkey.sanitize(&HotkeyConfig::default());
+        self.edit_hotkey.sanitize(&HotkeyConfig::default_edit());
+        // One key can't do both; dictation wins.
+        if self.edit_hotkey.enabled && self.edit_hotkey.same_keys(&self.hotkey) {
+            self.edit_hotkey.enabled = false;
         }
     }
 
@@ -551,6 +615,12 @@ impl Settings {
                     settings
                 }
                 Err(err) => {
+                    // Also to the log: the windowless tray has no stderr,
+                    // and a silent reset to defaults is baffling.
+                    tracing::warn!(
+                        "failed to parse settings ({}): {err}; using defaults",
+                        path.display()
+                    );
                     eprintln!(
                         "warning: failed to parse settings ({}): {err}; using defaults",
                         path.display()
@@ -815,6 +885,68 @@ profiles:
         assert!(s.llm_cleanup);
         assert!(s.sound_cues);
         assert!(s.streaming_transcription);
+        // Settings from before edit by voice and live text get both on.
+        assert_eq!(s.edit_hotkey, HotkeyConfig::default_edit());
+        assert!(s.live_text);
+    }
+
+    #[test]
+    fn settings_saved_with_a_byte_order_mark_still_load() {
+        // PowerShell 5's `Set-Content -Encoding utf8` (and older Notepad)
+        // put a BOM in front; the file must not silently reset to defaults.
+        let yaml = "\u{feff}auto_paste: false\nprofiles:\n  default:\n    format: clean_prose\n    privacy: local_only\n";
+        let s = Settings::from_yaml(yaml).unwrap();
+        assert!(!s.auto_paste);
+        let (s, _) = Settings::from_yaml_checked(yaml).unwrap();
+        assert!(!s.auto_paste);
+    }
+
+    #[test]
+    fn default_edit_hotkey_is_ctrl_shift_period() {
+        let s = Settings::with_defaults();
+        assert!(s.edit_hotkey.enabled);
+        assert_eq!(s.edit_hotkey.modifiers, vec!["control", "shift"]);
+        assert_eq!(s.edit_hotkey.key, "Period");
+        assert!(!s.edit_hotkey.same_keys(&s.hotkey));
+        assert!(crate::hotkey::hotkey_from_config(&s.edit_hotkey).is_ok());
+    }
+
+    #[test]
+    fn edit_hotkey_that_matches_the_dictation_hotkey_is_turned_off() {
+        let mut s = Settings::with_defaults();
+        s.edit_hotkey.modifiers = vec!["Ctrl".into()];
+        s.edit_hotkey.key = ".".into();
+        s.sanitize();
+        assert!(!s.edit_hotkey.enabled, "Ctrl+. can't both dictate and edit");
+        assert!(s.hotkey.enabled);
+    }
+
+    #[test]
+    fn edit_hotkey_is_sanitized_like_the_dictation_hotkey() {
+        let mut s = Settings::with_defaults();
+        s.edit_hotkey.modifiers = vec!["shift".into()];
+        s.edit_hotkey.key = "not a key".into();
+        s.sanitize();
+        // A Shift-only shortcut would swallow typing; fall back to the default.
+        assert_eq!(s.edit_hotkey.modifiers, vec!["control", "shift"]);
+        assert_eq!(s.edit_hotkey.key, "Period");
+    }
+
+    #[test]
+    fn same_keys_ignores_order_case_and_aliases() {
+        let a = HotkeyConfig {
+            modifiers: vec!["Ctrl".into(), "Shift".into()],
+            key: ".".into(),
+            ..HotkeyConfig::default()
+        };
+        let b = HotkeyConfig {
+            modifiers: vec!["shift".into(), "control".into()],
+            key: "Period".into(),
+            mode: HotkeyMode::Toggle,
+            enabled: false,
+        };
+        assert!(a.same_keys(&b));
+        assert!(!a.same_keys(&HotkeyConfig::default()));
     }
 
     #[test]

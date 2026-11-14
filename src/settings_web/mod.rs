@@ -152,6 +152,10 @@ pub struct SettingsPatch {
     pub llm_model: String,
     pub auto_paste: bool,
     pub hotkey: Option<HotkeyConfig>,
+    #[serde(default)]
+    pub edit_hotkey: Option<HotkeyConfig>,
+    #[serde(default)]
+    pub live_text: Option<bool>,
     pub custom_dictionary: Vec<String>,
     pub custom_aliases: Option<HashMap<String, Vec<String>>>,
     pub profiles: Option<HashMap<String, ProfileConfig>>,
@@ -209,6 +213,12 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) {
     settings.custom_dictionary = patch.custom_dictionary;
     if let Some(v) = patch.hotkey {
         settings.hotkey = v;
+    }
+    if let Some(v) = patch.edit_hotkey {
+        settings.edit_hotkey = v;
+    }
+    if let Some(v) = patch.live_text {
+        settings.live_text = v;
     }
     if let Some(v) = patch.custom_aliases {
         settings.custom_aliases = v;

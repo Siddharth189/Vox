@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use arboard::Clipboard;
 
 use crate::error::{Result, VoxError};
-use crate::inject::TextInjector;
+use crate::inject::{EditTarget, TextInjector};
 use crate::model::{AppContext, InjectionResult};
 use crate::permissions;
 
@@ -22,6 +22,9 @@ pub const RESTORE_DELAY: Duration = Duration::from_millis(700);
 /// Ctrl+Shift+V instead of Ctrl+V, which is a different command (or AltGr+V,
 /// a character) in many apps, so wait for them to come up first.
 const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long the app gets to put its selection on the clipboard after
+/// Ctrl/Cmd+C. Most do it within a few ms; Electron apps take longer.
+const COPY_TIMEOUT: Duration = Duration::from_millis(600);
 
 #[cfg(target_os = "macos")]
 const TRUSTED_STRATEGY: &str = "auto-paste (trusted cg-event)";
@@ -64,9 +67,12 @@ impl SavedClipboard {
     /// another app) replaced our dictated text in the meantime.
     fn restore(self, clipboard: &mut Clipboard, dictated: &str) {
         let still_ours = clipboard.get_text().ok().as_deref() == Some(dictated);
-        if !still_ours {
-            return;
+        if still_ours {
+            self.put_back(clipboard);
         }
+    }
+
+    fn put_back(self, clipboard: &mut Clipboard) {
         match self {
             Self::Text(prev) => {
                 let _ = set_clipboard_text(clipboard, &prev);
@@ -81,55 +87,157 @@ impl SavedClipboard {
     }
 }
 
-impl TextInjector for AutoPasteInjector {
-    fn inject(&self, text: &str, ctx: &AppContext) -> Result<InjectionResult> {
-        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
-        let previous = SavedClipboard::capture(&mut clipboard);
+/// The user's clipboard, borrowed by edit by voice while it copies the
+/// selection and pastes the result. Given back when released or dropped,
+/// so a failed edit never leaves the clipboard holding Vox's marker.
+pub struct ClipboardLease {
+    saved: Option<SavedClipboard>,
+    /// What Vox itself put on the clipboard: if it's still there, nobody
+    /// else has used the clipboard since, and the original can go back.
+    ours: Vec<String>,
+}
 
-        set_clipboard_text(&mut clipboard, text)?;
+impl ClipboardLease {
+    /// Puts the user's clipboard back now, unless something else replaced it.
+    pub fn release(mut self) {
+        self.put_back_if_unchanged();
+    }
+
+    fn put_back_if_unchanged(&mut self) {
+        let Some(saved) = self.saved.take() else {
+            return;
+        };
+        if let Ok(mut clipboard) = Clipboard::new() {
+            let current = clipboard.get_text().ok();
+            if current.is_none_or(|c| self.ours.contains(&c)) {
+                saved.put_back(&mut clipboard);
+            }
+        }
+    }
+
+    /// Hands the saved clipboard to the paste, which restores it later.
+    fn take_saved(mut self) -> SavedClipboard {
+        self.saved.take().unwrap_or(SavedClipboard::Nothing)
+    }
+}
+
+impl Drop for ClipboardLease {
+    fn drop(&mut self) {
+        self.put_back_if_unchanged();
+    }
+}
+
+impl TextInjector for AutoPasteInjector {
+    /// Puts a unique marker on the clipboard and presses Ctrl/Cmd+C: if the
+    /// marker is replaced, that's the selection; if it's still there,
+    /// nothing was selected.
+    fn begin_edit(&self, ctx: &AppContext) -> Result<EditTarget> {
+        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
+        let saved = SavedClipboard::capture(&mut clipboard);
+        let marker = format!(
+            "vox-edit-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        set_clipboard_text(&mut clipboard, &marker)?;
+        let mut lease = ClipboardLease {
+            saved: Some(saved),
+            ours: vec![marker.clone()],
+        };
 
         activate_target_app(ctx);
         wait_for_modifiers_released(MODIFIER_RELEASE_TIMEOUT);
+        // On failure the lease is dropped, which restores the clipboard.
+        synthesize_copy()?;
 
-        let chars = text.chars().count();
-
-        if permissions::accessibility_trusted() && synthesize_paste().is_ok() {
-            drop(clipboard);
-            restore_later(previous, text);
-            return Ok(InjectionResult {
-                injected_chars: chars,
-                strategy: TRUSTED_STRATEGY.into(),
-            });
+        let start = Instant::now();
+        let selection = loop {
+            match clipboard.get_text() {
+                Ok(text) if text != marker => break text,
+                _ if start.elapsed() >= COPY_TIMEOUT => break String::new(),
+                _ => thread::sleep(Duration::from_millis(15)),
+            }
+        };
+        if !selection.is_empty() {
+            lease.ours.push(selection.clone());
         }
-
-        // TCC can lie for locally-built/ad-hoc apps on macOS, and there is no
-        // equivalent trust check on Linux at all - still try synthesize.
-        if synthesize_paste().is_ok() {
-            // Do not restore clipboard - keep dictated text as safety net.
-            return Ok(InjectionResult {
-                injected_chars: chars,
-                strategy: SYNTHESIZED_KEPT_STRATEGY.into(),
-            });
-        }
-
-        if osascript_paste().is_ok() {
-            drop(clipboard);
-            restore_later(previous, text);
-            return Ok(InjectionResult {
-                injected_chars: chars,
-                strategy: "auto-paste (osascript)".into(),
-            });
-        }
-
-        Ok(InjectionResult {
-            injected_chars: chars,
-            strategy: UNAVAILABLE_STRATEGY.into(),
+        Ok(EditTarget {
+            selection,
+            lease: Some(lease),
         })
+    }
+
+    fn finish_edit(
+        &self,
+        target: EditTarget,
+        text: &str,
+        ctx: &AppContext,
+    ) -> Result<InjectionResult> {
+        match target.lease {
+            // The clipboard held the marker or the copied selection, not
+            // the user's; restore what was there before the edit started.
+            Some(lease) => paste(text, ctx, lease.take_saved()),
+            None => self.inject(text, ctx),
+        }
+    }
+
+    fn inject(&self, text: &str, ctx: &AppContext) -> Result<InjectionResult> {
+        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
+        let previous = SavedClipboard::capture(&mut clipboard);
+        drop(clipboard);
+        paste(text, ctx, previous)
     }
 
     fn name(&self) -> &'static str {
         "auto-paste"
     }
+}
+
+/// Puts `text` on the clipboard, pastes it into the focused app, and gives
+/// `previous` back once the app has read it.
+fn paste(text: &str, ctx: &AppContext, previous: SavedClipboard) -> Result<InjectionResult> {
+    {
+        let mut clipboard = Clipboard::new().map_err(|e| VoxError::Injection(e.to_string()))?;
+        set_clipboard_text(&mut clipboard, text)?;
+    }
+
+    activate_target_app(ctx);
+    wait_for_modifiers_released(MODIFIER_RELEASE_TIMEOUT);
+
+    let chars = text.chars().count();
+
+    if permissions::accessibility_trusted() && synthesize_paste().is_ok() {
+        restore_later(previous, text);
+        return Ok(InjectionResult {
+            injected_chars: chars,
+            strategy: TRUSTED_STRATEGY.into(),
+        });
+    }
+
+    // TCC can lie for locally-built/ad-hoc apps on macOS, and there is no
+    // equivalent trust check on Linux at all - still try synthesize.
+    if synthesize_paste().is_ok() {
+        // Do not restore clipboard - keep dictated text as safety net.
+        return Ok(InjectionResult {
+            injected_chars: chars,
+            strategy: SYNTHESIZED_KEPT_STRATEGY.into(),
+        });
+    }
+
+    if osascript_paste().is_ok() {
+        restore_later(previous, text);
+        return Ok(InjectionResult {
+            injected_chars: chars,
+            strategy: "auto-paste (osascript)".into(),
+        });
+    }
+
+    Ok(InjectionResult {
+        injected_chars: chars,
+        strategy: UNAVAILABLE_STRATEGY.into(),
+    })
 }
 
 /// Puts the previous clipboard back once the target app has had time to read
@@ -229,6 +337,30 @@ fn synthesize_paste() -> Result<()> {
     cg_event_paste()
 }
 
+/// Ctrl+C (Cmd+C on macOS) to the focused app, the same way as the paste.
+fn synthesize_copy() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if try_enigo_shortcut(SHORTCUT_COPY).is_ok() {
+            return Ok(());
+        }
+        let status = Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"System Events\" to keystroke \"c\" using command down")
+            .status()
+            .map_err(|e| VoxError::Injection(e.to_string()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(VoxError::Injection("couldn't send Cmd+C".into()))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        try_enigo_shortcut_bounded(SHORTCUT_COPY)
+    }
+}
+
 // enigo's Linux backend tries a portal-authorized libei session before
 // falling back to plain X11/XTest. That portal negotiation is a blocking
 // D-Bus round trip enigo makes no promise about the duration of: once the
@@ -242,17 +374,21 @@ fn synthesize_paste() -> Result<()> {
 // one-time consent flow a real chance to complete without stalling the
 // common (already-authorized) case, which returns almost immediately
 // either way.
-#[cfg(any(target_os = "macos", windows))]
 fn try_enigo_paste_bounded() -> Result<()> {
-    try_enigo_paste()
+    try_enigo_shortcut_bounded(SHORTCUT_PASTE)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn try_enigo_shortcut_bounded(shortcut: Shortcut) -> Result<()> {
+    try_enigo_shortcut(shortcut)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn try_enigo_paste_bounded() -> Result<()> {
+fn try_enigo_shortcut_bounded(shortcut: Shortcut) -> Result<()> {
     const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(8);
     let (tx, rx) = std::sync::mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(try_enigo_paste());
+        let _ = tx.send(try_enigo_shortcut(shortcut));
     });
     match rx.recv_timeout(SYNTHESIS_TIMEOUT) {
         Ok(result) => result,
@@ -262,34 +398,57 @@ fn try_enigo_paste_bounded() -> Result<()> {
     }
 }
 
-fn try_enigo_paste() -> Result<()> {
+/// A Ctrl/Cmd shortcut: the letter, its macOS virtual key (kVK_ANSI_*),
+/// and its Windows virtual key (VK_*).
+#[derive(Clone, Copy)]
+struct Shortcut {
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    letter: char,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    mac_key: u32,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    windows_key: u32,
+}
+
+const SHORTCUT_PASTE: Shortcut = Shortcut {
+    letter: 'v',
+    mac_key: 9,
+    windows_key: 0x56,
+};
+const SHORTCUT_COPY: Shortcut = Shortcut {
+    letter: 'c',
+    mac_key: 8,
+    windows_key: 0x43,
+};
+
+fn try_enigo_shortcut(shortcut: Shortcut) -> Result<()> {
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
     let mut enigo =
         Enigo::new(&Settings::default()).map_err(|e| VoxError::Injection(e.to_string()))?;
 
-    // macOS pastes with Cmd+V; everywhere else it's Ctrl+V.
+    // macOS uses Cmd; everywhere else it's Ctrl.
     #[cfg(target_os = "macos")]
     let modifier = Key::Meta;
     #[cfg(not(target_os = "macos"))]
     let modifier = Key::Control;
 
-    // Raw virtual keys on macOS (kVK_ANSI_V) and Windows (VK_V): Ctrl+V is
-    // bound to the V virtual key in every layout, while Unicode('v') has no
-    // key at all on e.g. a Russian or Greek layout and enigo would fall back
-    // to typing a literal "v". On Linux, enigo maps Unicode('v') through the
-    // active XKB keymap, which is what XTest/libei expect.
+    // Raw virtual keys on macOS and Windows: Ctrl+V is bound to the V
+    // virtual key in every layout, while Unicode('v') has no key at all on
+    // e.g. a Russian or Greek layout and enigo would fall back to typing a
+    // literal "v". On Linux, enigo maps the letter through the active XKB
+    // keymap, which is what XTest/libei expect.
     #[cfg(target_os = "macos")]
-    let paste_key = Key::Other(9);
+    let key = Key::Other(shortcut.mac_key);
     #[cfg(windows)]
-    let paste_key = Key::Other(0x56);
+    let key = Key::Other(shortcut.windows_key);
     #[cfg(not(any(target_os = "macos", windows)))]
-    let paste_key = Key::Unicode('v');
+    let key = Key::Unicode(shortcut.letter);
 
     enigo
         .key(modifier, Direction::Press)
         .map_err(|e| VoxError::Injection(e.to_string()))?;
-    let clicked = enigo.key(paste_key, Direction::Click);
+    let clicked = enigo.key(key, Direction::Click);
     thread::sleep(Duration::from_millis(30));
     // Always release the modifier, even if the V click failed, so Ctrl is
     // never left logically stuck down.
