@@ -22,6 +22,13 @@ All notable changes to Vox are listed here. The format follows
   text and are dropped as soon as you stop. Turn it off with **Live text**
   in settings. `vox transcribe FILE.wav --stream --live` prints the same updates.
 
+### Changed
+
+- **Language settings are dropdowns again.** Spoken language (Auto-detect or a language) and
+  Output language (Same as spoken or a language) show every option, replacing two free-text
+  boxes whose list only ever showed the value already typed. A saved setting that isn't in the
+  list, such as Hinglish or "English, Hindi", still shows and is kept as it is.
+
 ### Fixed
 
 - **A dictation is no longer lost to "Invalid UTF-8".** When decoding stopped partway through a

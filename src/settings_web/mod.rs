@@ -28,6 +28,7 @@ const PORT: u16 = 8722;
 const INDEX_HTML: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const DICTIONARY_JS: &str = include_str!("dictionary.js");
+const LANGUAGES_JS: &str = include_str!("languages.js");
 const PROFILES_JS: &str = include_str!("profiles.js");
 const SNIPPETS_JS: &str = include_str!("snippets.js");
 const HISTORY_JS: &str = include_str!("history.js");
@@ -58,6 +59,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/", get(index))
         .route("/app.js", get(|| async { js(APP_JS) }))
         .route("/dictionary.js", get(|| async { js(DICTIONARY_JS) }))
+        .route("/languages.js", get(|| async { js(LANGUAGES_JS) }))
         .route("/profiles.js", get(|| async { js(PROFILES_JS) }))
         .route("/snippets.js", get(|| async { js(SNIPPETS_JS) }))
         .route("/history.js", get(|| async { js(HISTORY_JS) }))

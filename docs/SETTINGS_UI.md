@@ -6,7 +6,11 @@ Local web UI served by the tray process at [http://127.0.0.1:8722](http://127.0.
 
 - **Your dictation** - lifetime words, time saved, speaking pace, and streak
   (`GET /api/stats`).
-- **General** - input/output language, Whisper model, LLM server (Ollama or
+- **Language** - Spoken language and Output language dropdowns (`languages.js`)
+  writing the same `input_language` / `output_language` strings as before. A
+  saved value that isn't in the list (Hinglish, "English, Hindi") is shown as
+  its own entry and kept on save.
+- **General** - Whisper model, LLM server (Ollama or
   OpenAI-compatible, plus URL) and model, voice commands toggle, auto-paste,
   optional system-message override with live prompt preview, hotkey editors for
   dictation and edit by voice (each refuses the other's shortcut), live text switch.

@@ -1,4 +1,4 @@
-/* global VoxDictionary, VoxProfiles, VoxHistory, VoxSnippets */
+/* global VoxDictionary, VoxLanguages, VoxProfiles, VoxHistory, VoxSnippets */
 
 const state = {
   settings: null,
@@ -132,8 +132,6 @@ function setupHotkeyCapture(prefix) {
 }
 
 function applySettingsToForm(s) {
-  document.getElementById("input_language").value = s.input_language || "auto";
-  document.getElementById("output_language").value = s.output_language || "auto";
   document.getElementById("auto_paste").checked = !!s.auto_paste;
   document.getElementById("llm_cleanup").checked = s.llm_cleanup !== false;
   document.getElementById("sound_cues").checked = s.sound_cues !== false;
@@ -154,6 +152,7 @@ function applySettingsToForm(s) {
   fillSelect(document.getElementById("whisper_model"), state.models.whisper, s.whisper_model);
   fillSelect(document.getElementById("llm_model"), state.models.ollama, s.llm_model);
   fillDeviceSelect(s.input_device || "");
+  if (window.VoxLanguages) VoxLanguages.refresh();
 }
 
 function fillDeviceSelect(current) {
@@ -176,9 +175,14 @@ function fillDeviceSelect(current) {
 
 function readGeneralPatch() {
   const override = document.getElementById("system_override").value.trim();
+  // The language dropdowns resolve "Other…" and older spellings for us.
+  // If the dropdown script never loaded, keep what's saved rather than reset it.
+  const lang = window.VoxLanguages
+    ? VoxLanguages.values()
+    : { input: state.settings.input_language || "auto", output: state.settings.output_language || "auto" };
   return {
-    input_language: document.getElementById("input_language").value.trim() || "auto",
-    output_language: document.getElementById("output_language").value.trim() || "auto",
+    input_language: lang.input,
+    output_language: lang.output,
     whisper_model: document.getElementById("whisper_model").value,
     llm_model: document.getElementById("llm_model").value,
     auto_paste: document.getElementById("auto_paste").checked,
@@ -325,6 +329,7 @@ async function boot() {
   state.models = models;
   state.devices = devices || [];
   applySettingsToForm(settings);
+  if (window.VoxLanguages) VoxLanguages.mount(state);
 
   if (window.VoxDictionary) VoxDictionary.mount(document.getElementById("section-dictionary"), state);
   if (window.VoxProfiles) VoxProfiles.mount(document.getElementById("section-profiles"), state);
