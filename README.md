@@ -238,7 +238,8 @@ vox tray                      run the tray app (Windows: vox-tray.exe or Start m
 vox setup                     download the speech model and run the readiness check
 vox doctor [--json]           readiness report: mic, hotkey, model, LLM server, permissions
 vox stats [--json|--reset]    words dictated, time saved, speaking pace, streak
-vox download-model [NAME]     fetch a Whisper model (--list for choices) and select it
+vox download-model [NAME]     fetch a Whisper model (--list for choices) and select it;
+                              with no NAME, keeps the current model
 vox devices                   list microphones (* = selected)
 vox listen [--secs 5]         record once from the mic and print the cleaned result
 vox transcribe FILE.wav       transcribe a recording (benchmarks, bug reports)
@@ -262,7 +263,7 @@ vox check                     send one test request to the configured LLM server
 | `large-v3-turbo-q5_0` | 547 MB | best accuracy; use a GPU (macOS) |
 
 `vox download-model small-q5_1` downloads a model and switches to it. The tray picks it up
-without a restart.
+without a restart. Re-running an installer to upgrade keeps the model you chose.
 
 ## Optional: polish with a local LLM
 

@@ -84,19 +84,28 @@ async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+/// The page and its scripts are built into the binary, so after an upgrade a
+/// cached copy is stale. `no-cache` makes the browser check every time (a
+/// local round trip), so a new version shows without a hard refresh.
+const NO_CACHE: (header::HeaderName, HeaderValue) =
+    (header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+
 fn js(body: &'static str) -> Response {
     (
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/javascript; charset=utf-8"),
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/javascript; charset=utf-8"),
+            ),
+            NO_CACHE,
+        ],
         body,
     )
         .into_response()
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> Response {
+    ([NO_CACHE], Html(INDEX_HTML)).into_response()
 }
 
 fn host_allowed(host: Option<&str>) -> bool {
@@ -416,5 +425,18 @@ mod tests {
         assert!(origin_allowed(Some("http://127.0.0.1:8722")));
         assert!(!origin_allowed(Some("https://evil.example")));
         assert!(!origin_allowed(Some("null")));
+    }
+
+    #[tokio::test]
+    async fn page_and_scripts_are_never_served_stale() {
+        let page = index().await;
+        let script = js(LANGUAGES_JS);
+        for r in [&page, &script] {
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "no-cache");
+        }
+        assert!(page.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
     }
 }

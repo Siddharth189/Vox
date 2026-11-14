@@ -93,7 +93,8 @@ Usage:
   vox tray [--model PATH]          run the tray app (hotkey: Ctrl+. by default)
   vox setup [--model NAME]         download the speech model and check everything
   vox doctor [--json]              readiness report
-  vox download-model [NAME]        fetch a Whisper model (default: {}); `--list` shows choices
+  vox download-model [NAME]        fetch a Whisper model (no NAME: keep the current one,
+                                   else {}); `--list` shows choices
   vox transcribe FILE.wav [--model PATH] [--lang LANG] [--threads N] [--repeat N] [--stream [--live]]
   vox listen [--secs N] [--model PATH] [--device NAME] [--dry-run]
   vox devices                      list microphones (* = selected)
@@ -531,11 +532,23 @@ fn cmd_download_model(args: &[String]) -> Result<()> {
         }
         return Ok(());
     }
-    let name =
-        positional_text(args).unwrap_or_else(|| vox::config::DEFAULT_WHISPER_MODEL_NAME.into());
+    let mut settings = Settings::load();
+    let name = match positional_text(args) {
+        Some(name) => name,
+        // No name: keep the model already set up, so re-running an installer
+        // to upgrade never switches someone back to the default. Only a new
+        // install (or a missing or broken model file) gets the default.
+        None => {
+            let current = PathBuf::from(&settings.whisper_model);
+            if vox::models::is_valid_model_file(&current) {
+                println!("keeping your current model: {}", current.display());
+                return Ok(());
+            }
+            vox::config::DEFAULT_WHISPER_MODEL_NAME.into()
+        }
+    };
     let path = download_with_progress(&name)?;
 
-    let mut settings = Settings::load();
     let path_str = path.to_string_lossy().into_owned();
     if settings.whisper_model != path_str && !args.iter().any(|a| a == "--no-select") {
         settings.whisper_model = path_str;

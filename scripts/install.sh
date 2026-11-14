@@ -99,8 +99,10 @@ if [[ "${REPLACED}" == "1" ]]; then
 fi
 
 # Also records the model in settings.yaml, so downloaded == configured.
-WHISPER_MODEL="${VOX_WHISPER_MODEL:-base-q5_1}"
-run "${HOME}/.local/bin/vox" download-model "${WHISPER_MODEL}"
+# With no name it keeps the model already in settings.yaml, so an upgrade
+# never switches you back to the default; a new install gets base-q5_1.
+WHISPER_MODEL="${VOX_WHISPER_MODEL:-}"
+run "${HOME}/.local/bin/vox" download-model ${WHISPER_MODEL:+"${WHISPER_MODEL}"}
 
 MODEL="${VOX_MODEL:-llama3.2:latest}"
 if [[ "${WITH_LLM}" == "1" ]]; then
@@ -140,7 +142,7 @@ if [[ ! -f "${SETTINGS}" ]]; then
 auto_paste: true
 output_language: auto
 input_language: auto
-whisper_model: ${DATA_DIR}/models/ggml-${WHISPER_MODEL}.bin
+whisper_model: ${DATA_DIR}/models/ggml-${WHISPER_MODEL:-base-q5_1}.bin
 llm_model: ${MODEL}
 custom_dictionary: []
 custom_aliases: {}
