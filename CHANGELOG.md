@@ -8,13 +8,10 @@ All notable changes to Vox are listed here. The format follows
 
 ### Changed
 
-- **Language settings are dropdowns again, with every option.** Spoken language lists
-  Auto-detect, single languages, "English + Hindi", "Hinglish (Hindi & English mixed)" and Other;
-  Output language lists Same as spoken, English, Hindi (देवनागरी), Hinglish in Latin letters and
-  more. Output languages that need the local AI to translate say so in the list ("needs local
-  AI"), with a note explaining what happens until it runs, instead of Vox quietly inserting
-  untranslated text. Replaces two free-text boxes whose list only ever showed the value already
-  typed. Existing settings carry over unchanged.
+- **Language settings are dropdowns again.** Spoken language (Auto-detect or a language) and
+  Output language (Same as spoken or a language) show every option, replacing two free-text
+  boxes whose list only ever showed the value already typed. A saved setting that isn't in the
+  list, such as Hinglish or "English, Hindi", still shows and is kept as it is.
 
 ### Fixed
 

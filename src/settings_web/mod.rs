@@ -252,31 +252,18 @@ async fn post_settings(payload: Result<Json<SettingsPatch>, JsonRejection>) -> R
 struct ModelsResponse {
     whisper: Vec<String>,
     ollama: Vec<String>,
-    /// LLM cleanup is on and its server answers with the configured model:
-    /// translation will actually happen. The same check dictation uses.
-    llm_ready: bool,
 }
 
 async fn get_models() -> Json<ModelsResponse> {
     // Blocking HTTP/fs on a dedicated pool - settings server uses a current_thread runtime.
-    let result = tokio::task::spawn_blocking(|| {
-        let settings = Settings::load();
-        ModelsResponse {
-            whisper: list_whisper_models(),
-            ollama: list_ollama_models(),
-            llm_ready: settings.llm_cleanup
-                && crate::process::probe_llm(
-                    settings.llm_provider,
-                    &settings.llm_base_url(),
-                    &settings.llm_model,
-                ),
-        }
+    let result = tokio::task::spawn_blocking(|| ModelsResponse {
+        whisper: list_whisper_models(),
+        ollama: list_ollama_models(),
     })
     .await;
     Json(result.unwrap_or(ModelsResponse {
         whisper: Vec::new(),
         ollama: Vec::new(),
-        llm_ready: false,
     }))
 }
 

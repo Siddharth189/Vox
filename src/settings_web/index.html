@@ -163,14 +163,6 @@
     }
     .chip button:hover { color: var(--danger); }
 
-    /* Language */
-    .lang-other { margin-top: 0.5rem; }
-    .lang-other[hidden], .lang-note[hidden] { display: none; }
-    .lang-note {
-      margin-top: 0.4rem; padding: 0.6rem 0.8rem; border-radius: 10px;
-      border: 1px solid var(--danger); background: var(--chip-bg); font-size: 0.85rem;
-    }
-
     /* Dictionary table */
     .dict-table { width: 100%; }
     .dict-row {
@@ -257,11 +249,10 @@
       <div class="field-row">
         <div class="field-info">
           <div class="field-title">Spoken language</div>
-          <div class="field-desc">Language you dictate in. Auto-detect works for most cases; speak two? Pick both so Vox never mistakes your speech for another language.</div>
+          <div class="field-desc">Language you dictate in. Auto-detect works for most cases.</div>
         </div>
         <div class="field-control">
           <select id="input_language" aria-label="Spoken language"></select>
-          <input id="input_language_other" type="text" class="lang-other" placeholder="e.g. English, Gujarati" aria-label="Languages you speak" hidden />
         </div>
       </div>
       <div class="field-row">
@@ -271,10 +262,8 @@
         </div>
         <div class="field-control">
           <select id="output_language" aria-label="Output language"></select>
-          <input id="output_language_other" type="text" class="lang-other" placeholder="e.g. Swahili" aria-label="Language to write in" hidden />
         </div>
       </div>
-      <div class="lang-note" id="lang_note" role="status" aria-live="polite" hidden></div>
     </section>
 
     <section class="section" id="section-models">
