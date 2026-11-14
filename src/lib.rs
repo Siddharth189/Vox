@@ -11,6 +11,7 @@ pub mod hotkey;
 pub mod inject;
 pub mod model;
 pub mod models;
+pub mod overlay;
 pub mod permissions;
 pub mod pipeline;
 pub mod privacy;

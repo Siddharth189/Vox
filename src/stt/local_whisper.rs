@@ -1,4 +1,6 @@
+use std::ffi::c_void;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use whisper_rs::{
@@ -117,6 +119,7 @@ impl LocalWhisper {
         state: &mut WhisperState,
         samples: &[f32],
         allowed: Option<&[&'static str]>,
+        remember: bool,
     ) -> Option<&'static str> {
         let threads = self.threads.max(1) as usize;
         let probs = match state
@@ -140,7 +143,7 @@ impl LocalWhisper {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let choice = pick_language(&ranked, allowed, secs, *sticky);
-        if allowed.is_none() {
+        if remember && allowed.is_none() {
             if let Some(&(top, p)) = ranked.iter().max_by(|a, b| a.1.total_cmp(&b.1)) {
                 if is_confident(secs, p) {
                     *sticky = Some(top);
@@ -202,8 +205,17 @@ impl LocalWhisper {
         samples: &[f32],
         language: Option<&str>,
         prompt: Option<&str>,
+        stop: Option<&AtomicBool>,
     ) -> Result<(String, Option<f32>)> {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        if let Some(stop) = stop {
+            // whisper.cpp polls this between graph nodes and decoder steps.
+            // The flag outlives the call: `full` below is synchronous.
+            unsafe {
+                params.set_abort_callback(Some(stop_requested));
+                params.set_abort_callback_user_data(stop as *const AtomicBool as *mut c_void);
+            }
+        }
         params.set_n_threads(self.threads);
         params.set_print_special(false);
         params.set_print_progress(false);
@@ -245,10 +257,13 @@ impl LocalWhisper {
         let eot = self.ctx.token_eot();
         let (mut prob_sum, mut tokens) = (0.0f32, 0u32);
         for i in 0..n {
+            // Lossy: a segment can end partway through a multi-byte
+            // character (Devanagari, say) when decoding stops at the token
+            // cap, and the strict reader then failed the whole dictation.
             let seg = state
-                .full_get_segment_text(i)
+                .full_get_segment_text_lossy(i)
                 .map_err(|e| VoxError::Transcription(e.to_string()))?;
-            text.push_str(&seg);
+            text.push_str(&without_broken_chars(&seg));
             for j in 0..state.full_n_tokens(i).unwrap_or(0) {
                 // Special tokens (timestamps, language, end of text) sit at
                 // and above end-of-text; only the words count.
@@ -261,6 +276,121 @@ impl LocalWhisper {
         }
         let confidence = (tokens > 0).then(|| prob_sum / tokens as f32);
         Ok((text, confidence))
+    }
+
+    /// The language last detected with confidence, if any.
+    fn remembered_language(&self) -> Option<&'static str> {
+        *self
+            .last_confident
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The language to decode `samples` in (None: let whisper.cpp detect).
+    /// A `preview` never re-detects (an extra encoder pass) and never
+    /// updates the remembered language, so it can't change what the real
+    /// transcription of the same speech decides.
+    fn choose_language(
+        &self,
+        state: &mut WhisperState,
+        samples: &[f32],
+        hint: &SegmentHint,
+        preview: bool,
+    ) -> Option<&'static str> {
+        let plan = self.plan();
+        let allowed = plan.allowed();
+        let earlier = hint
+            .language
+            .as_deref()
+            .filter(|c| *c != "auto")
+            .and_then(|c| whisper_rs::get_lang_id(c).and_then(whisper_rs::get_lang_str))
+            .filter(|c| allowed.as_ref().is_none_or(|a| a.contains(c)));
+        match &plan {
+            LanguagePlan::Force(code) => Some(code),
+            LanguagePlan::Hinglish => Some("en"),
+            // Auto: keep the language an earlier segment settled on;
+            // re-detecting among every language on a few-second segment
+            // flips between related ones.
+            LanguagePlan::Auto if earlier.is_some() => earlier,
+            // A preview can't afford a detection pass (it can't be aborted):
+            // the language last heard clearly is the best cheap guess.
+            LanguagePlan::Auto if preview && self.remembered_language().is_some() => {
+                self.remembered_language()
+            }
+            LanguagePlan::Auto => self.detect_language(state, samples, None, !preview),
+            // Several languages: the user may switch mid-dictation, so look
+            // again, but only leave the earlier language when this segment
+            // is clearly another (see `keep_or_switch`).
+            LanguagePlan::Constrained(codes) => match earlier {
+                Some(pinned) if preview => Some(pinned),
+                Some(pinned) => Some(self.redetect(state, samples, codes, pinned)),
+                None if preview => self
+                    .remembered_language()
+                    .filter(|c| codes.contains(c))
+                    .or_else(|| self.detect_language(state, samples, Some(codes), false)),
+                None => self.detect_language(state, samples, Some(codes), true),
+            },
+        }
+    }
+
+    /// See [`Transcriber::preview`]: one pass, no retries, abandoned when
+    /// `stop` is set. Whatever it can't vouch for (prompt echoes, a script
+    /// the user doesn't speak) comes back as `None` rather than shown.
+    fn run_preview(
+        &self,
+        samples: &[f32],
+        hint: &SegmentHint,
+        vocabulary: Option<&str>,
+        stop: &AtomicBool,
+    ) -> Option<String> {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut padded = samples.to_vec();
+        padded.resize(
+            samples.len().max(MIN_AUDIO_SAMPLES) + TAIL_PADDING_SAMPLES,
+            0.0,
+        );
+        let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.ctx.create_state().ok()?);
+        }
+        let state = guard.as_mut().expect("state initialized above");
+        let allowed = self.plan().allowed();
+        let language = self.choose_language(state, &padded, hint, true);
+        let prompt = initial_prompt(
+            self.initial_prompt.as_deref(),
+            vocabulary,
+            &hint.previous_text,
+        );
+        let (text, confidence) =
+            match self.decode(state, &padded, language, prompt.as_deref(), Some(stop)) {
+                Ok(decoded) => decoded,
+                // Abandoned on purpose: whisper.cpp starts every run from a
+                // clean slate, so the state stays usable for the real pass.
+                Err(_) if stop.load(Ordering::Relaxed) => return None,
+                Err(e) => {
+                    tracing::debug!("live preview failed: {e}");
+                    *guard = None;
+                    return None;
+                }
+            };
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        let text = collapse_repeated_sentences(text.trim());
+        let quiet = is_quiet(samples);
+        let echo = is_prompt_echo(
+            &text,
+            &[self.initial_prompt.as_deref(), vocabulary],
+            confidence,
+            quiet,
+        );
+        let wrong_script = allowed
+            .as_deref()
+            .and_then(|a| super::script_mismatch(&text, a))
+            .is_some();
+        (!echo && !wrong_script && !super::is_non_speech(&text)).then_some(text)
     }
 
     /// Transcribes 16 kHz mono `samples`. `hint` carries the text and
@@ -298,30 +428,8 @@ impl LocalWhisper {
         // explicitly to auto-detect. Picking the language here instead costs
         // the same (whisper.cpp's auto mode runs the same detection pass)
         // but lets it be restricted to the languages the user speaks.
-        let plan = self.plan();
-        let allowed = plan.allowed();
-        let earlier = hint
-            .language
-            .as_deref()
-            .filter(|c| *c != "auto")
-            .and_then(|c| whisper_rs::get_lang_id(c).and_then(whisper_rs::get_lang_str))
-            .filter(|c| allowed.as_ref().is_none_or(|a| a.contains(c)));
-        let language: Option<&'static str> = match &plan {
-            LanguagePlan::Force(code) => Some(code),
-            LanguagePlan::Hinglish => Some("en"),
-            // Auto: keep the language an earlier segment settled on;
-            // re-detecting among every language on a few-second segment
-            // flips between related ones.
-            LanguagePlan::Auto if earlier.is_some() => earlier,
-            LanguagePlan::Auto => self.detect_language(state, samples, None),
-            // Several languages: the user may switch mid-dictation, so look
-            // again, but only leave the earlier language when this segment
-            // is clearly another (see `keep_or_switch`).
-            LanguagePlan::Constrained(codes) => match earlier {
-                Some(pinned) => Some(self.redetect(state, samples, codes, pinned)),
-                None => self.detect_language(state, samples, Some(codes)),
-            },
-        };
+        let allowed = self.plan().allowed();
+        let language = self.choose_language(state, samples, hint, false);
 
         let prompt = initial_prompt(
             self.initial_prompt.as_deref(),
@@ -329,7 +437,7 @@ impl LocalWhisper {
             &hint.previous_text,
         );
         let (mut text, mut confidence) =
-            match self.decode(state, samples, language, prompt.as_deref()) {
+            match self.decode(state, samples, language, prompt.as_deref(), None) {
                 Ok(decoded) => decoded,
                 Err(e) => {
                     // A failed run can leave the state inconsistent; rebuild next time.
@@ -348,7 +456,7 @@ impl LocalWhisper {
         let speech_secs = speech.len() as f32 / TARGET_RATE as f32;
         let quiet = is_quiet(speech);
         if prompt.is_some() && !quiet && too_short_for(&text, speech_secs) {
-            match self.decode(state, samples, language, None) {
+            match self.decode(state, samples, language, None, None) {
                 Ok((retry, retry_confidence)) if content_len(&retry) > content_len(&text) => {
                     tracing::warn!(
                         "{speech_secs:.1}s of speech decoded as {text:?}; without the prompt: {retry:?}"
@@ -935,9 +1043,43 @@ impl Transcriber for LocalWhisper {
         self.run(&audio.samples, hint, vocabulary.as_deref())
     }
 
+    fn preview(
+        &self,
+        audio: &AudioChunk,
+        ctx: &AppContext,
+        hint: &SegmentHint,
+        stop: &AtomicBool,
+    ) -> Option<String> {
+        if audio.samples.is_empty()
+            || audio.sample_rate != TARGET_RATE
+            || audio::is_silent(&audio.samples, audio.sample_rate)
+        {
+            return None;
+        }
+        let vocabulary = title_vocabulary(ctx.window_title.as_deref(), &ctx.app_name);
+        self.run_preview(&audio.samples, hint, vocabulary.as_deref(), stop)
+    }
+
     fn name(&self) -> &'static str {
         "local-whisper"
     }
+}
+
+/// `text` without the replacement characters a lossy read leaves where a
+/// multi-byte character was cut off. Losing a broken character beats
+/// losing the dictation.
+fn without_broken_chars(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\u{FFFD}') {
+        std::borrow::Cow::Owned(text.replace('\u{FFFD}', ""))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// whisper.cpp's abort callback: `data` is the `AtomicBool` passed to
+/// `decode`, alive for the whole (synchronous) run.
+unsafe extern "C" fn stop_requested(data: *mut c_void) -> bool {
+    !data.is_null() && unsafe { (*(data as *const AtomicBool)).load(Ordering::Relaxed) }
 }
 
 pub fn whisper_language_code(name: &str) -> Option<&'static str> {
@@ -962,6 +1104,17 @@ pub fn whisper_language_code(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_character_cut_off_at_the_token_cap_is_dropped_not_fatal() {
+        // "जाऊँगा" with its last character's bytes cut short, read lossily.
+        let mut bytes = "मैं जाऊँगा".as_bytes().to_vec();
+        bytes.truncate(bytes.len() - 1);
+        let lossy = String::from_utf8_lossy(&bytes);
+        assert!(lossy.contains('\u{FFFD}'));
+        assert_eq!(without_broken_chars(&lossy), "मैं जाऊँग");
+        assert_eq!(without_broken_chars("plain text"), "plain text");
+    }
 
     #[test]
     fn language_codes() {
