@@ -203,11 +203,14 @@ jobs:
         run: |
           # A cache hit restores whisper.cpp prebuilt and without its CMake
           # build dir; the cache key includes CC=clang-cl, so that's fine.
-          if ! ls target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt >/dev/null 2>&1; then
+          # Searched for rather than a fixed path: cargo's build-dir layout
+          # is not stable.
+          caches=$(find target -name CMakeCache.txt -path '*whisper-rs-sys*' 2>/dev/null)
+          if [ -z "$caches" ]; then
             echo "::notice::whisper.cpp restored from cache (key includes CC=clang-cl)"
             exit 0
           fi
-          grep -h '^CMAKE_C_COMPILER:' target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | tee cc.txt
+          grep -h '^CMAKE_C_COMPILER:' $caches | tee cc.txt
           grep -qi clang cc.txt
 
       - name: cargo test

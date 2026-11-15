@@ -89,7 +89,16 @@ jobs:
       - name: Check whisper.cpp was built with clang-cl
         shell: bash
         run: |
-          grep -h '^CMAKE_C_COMPILER:' target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | tee cc.txt
+          # Found by search, not a fixed path: cargo's build-dir layout is
+          # not stable (target/release/build/<pkg>-<hash>/out/ until now).
+          caches=$(find target -name CMakeCache.txt -path '*whisper-rs-sys*' 2>/dev/null)
+          if [ -z "$caches" ]; then
+            echo "::error::no whisper.cpp CMakeCache.txt under target/"
+            find target -maxdepth 5 -type d -path '*whisper-rs-sys*' | head -20
+            exit 1
+          fi
+          echo "$caches"
+          grep -h '^CMAKE_C_COMPILER:' $caches | tee cc.txt
           grep -qi clang cc.txt
 
       # Fails if Whisper runs slower than real time: the MSVC-built 0.3.0
